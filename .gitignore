@@ -1,6 +1,9 @@
 # 环境变量文件（包含敏感Token）
 .env
 
+# 需求文档（仅本地保留）
+需求.md
+
 # Python
 __pycache__/
 *.py[cod]
