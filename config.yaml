@@ -1,0 +1,23 @@
+server:
+  host: "0.0.0.0"
+  port: 8000
+
+providers:
+  deepseek:
+    base_url: "https://chat.deepseek.com"
+    enabled: true
+  kimi:
+    base_url: "https://kimi.moonshot.cn"
+    enabled: true
+  metaso:
+    base_url: "https://metaso.cn"
+    enabled: true
+  doubao:
+    base_url: "https://www.doubao.com"
+    enabled: true
+  qwen:
+    base_url: "https://qianwen.biz.aliyun.com/dialog"
+    enabled: true
+  zhipu:
+    base_url: "https://chatglm.cn"
+    enabled: true
