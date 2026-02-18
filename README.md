@@ -12,6 +12,7 @@
 | 豆包 (字节跳动) | doubao, doubao-pro, doubao-lite, doubao-1.5-pro | ✅ |
 | 千问 (通义千问) | qwen, qwen3, qwen3-max, qwen3-flash, qwen-long | ✅ |
 | 智谱清言 (ChatGLM) | zhipu, chatglm, glm-5 | ✅ |
+| MiniMax (海螺AI) | minimax, minimax-auto, MiniMax-M2.5 | ✅ |
 
 ## 功能特性
 
@@ -149,6 +150,38 @@ sign = md5(f"{timestamp}-{x_nonce}-{secret}")
 
 ---
 
+### MiniMax (海螺AI)
+
+**获取方式**：
+1. 访问 [MiniMax Agent官网](https://agent.minimaxi.com/) 并登录
+2. 打开浏览器开发者工具 (F12)
+3. 切换到 Application 标签页
+4. 在左侧找到 Local Storage -> https://agent.minimaxi.com
+5. 找到 `_token` 的值
+
+**Token 格式**：JWT 格式，以 `eyJ` 开头的长字符串
+
+**原理**：MiniMax Agent 使用 JWT Token 进行认证，Token 存储在 LocalStorage 中。服务实现了完整的请求签名算法（MD5），包括：
+- `x-signature`: MD5(timestamp + secret + body)
+- `yy`: MD5(encoded_path + "_" + body + md5(time_ms) + "ooui")
+
+**签名算法**：
+```python
+# x-signature 生成
+signature = md5(f"{timestamp}I*7Cf%WZ#S&%1RlZJ&C2{body}")
+
+# yy 生成  
+yy = md5(f"{encoded_path}_{body}{md5(str(time_ms))}ooui")
+```
+
+**支持模型**：
+- `minimax` / `minimax-auto` - Auto 模式
+- `MiniMax-M2.5` - MiniMax M2.5 对话模型
+
+**注意**：MiniMax Agent 平台与 MiniMax 开放 API 是不同的服务，模型名称也不同。
+
+---
+
 ## API 使用示例
 
 ### 列出可用模型
@@ -232,7 +265,8 @@ nxapi/
 │       ├── metaso.py       # Metaso 实现
 │       ├── doubao.py       # 豆包 实现
 │       ├── qwen.py         # 千问 实现
-│       └── zhipu.py        # 智谱 实现
+│       ├── zhipu.py        # 智谱 实现
+│       └── minimax.py      # MiniMax 实现
 ├── config.yaml             # 服务配置
 ├── .env                    # Token 配置
 ├── requirements.txt        # 依赖列表
@@ -260,6 +294,7 @@ nxapi/
 | 豆包 | Session Cookie | 设备指纹生成、请求签名 |
 | 千问 | Cookie (SSO) | XSRF Token 处理 |
 | 智谱 | JWT Token | MD5 签名、Token 自动刷新 |
+| MiniMax | JWT Token | LocalStorage Token 认证 |
 
 ### 安全说明
 

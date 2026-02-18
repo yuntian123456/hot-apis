@@ -15,7 +15,7 @@ from .models import (
     ChatMessage, ChatCompletionChoice, StreamChoice, DeltaMessage, Usage,
     ModelList, ModelInfo
 )
-from .providers import DeepSeekProvider, KimiProvider, MetasoProvider, DoubaoProvider, QwenProvider, ZhipuProvider, BaseProvider
+from .providers import DeepSeekProvider, KimiProvider, MetasoProvider, DoubaoProvider, QwenProvider, ZhipuProvider, MiniMaxProvider, BaseProvider
 
 
 providers: Dict[str, BaseProvider] = {}
@@ -66,6 +66,13 @@ def get_provider_for_model(model: str) -> tuple[str, BaseProvider]:
             providers[provider_name] = ZhipuProvider(token=token)
         return provider_name, providers[provider_name]
     
+    if any(x in model_lower for x in ["minimax"]):
+        provider_name = "minimax"
+        if provider_name not in providers:
+            token = settings.providers.minimax.token
+            providers[provider_name] = MiniMaxProvider(token=token)
+        return provider_name, providers[provider_name]
+    
     if settings.providers.deepseek.token:
         provider_name = "deepseek"
         if provider_name not in providers:
@@ -108,6 +115,13 @@ def get_provider_for_model(model: str) -> tuple[str, BaseProvider]:
             providers[provider_name] = ZhipuProvider(token=token)
         return provider_name, providers[provider_name]
     
+    if settings.providers.minimax.token:
+        provider_name = "minimax"
+        if provider_name not in providers:
+            token = settings.providers.minimax.token
+            providers[provider_name] = MiniMaxProvider(token=token)
+        return provider_name, providers[provider_name]
+    
     raise HTTPException(status_code=400, detail=f"No provider available for model: {model}")
 
 
@@ -120,7 +134,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="NXAPI - OpenAI Compatible API",
-    description="大模型 API 中转站，支持 DeepSeek、Kimi、Metaso、豆包、千问和智谱清言",
+    description="大模型 API 中转站，支持 DeepSeek、Kimi、Metaso、豆包、千问、智谱清言和 MiniMax",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -198,6 +212,13 @@ async def list_models():
             ModelInfo(id="zhipu", owned_by="zhipu"),
             ModelInfo(id="chatglm", owned_by="zhipu"),
             ModelInfo(id="glm-5", owned_by="zhipu"),
+        ])
+    
+    if settings.providers.minimax.token:
+        models.extend([
+            ModelInfo(id="minimax", owned_by="minimax"),
+            ModelInfo(id="minimax-auto", owned_by="minimax"),
+            ModelInfo(id="MiniMax-M2.5", owned_by="minimax"),
         ])
     
     return ModelList(data=models)

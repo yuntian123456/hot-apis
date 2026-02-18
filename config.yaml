@@ -21,3 +21,6 @@ providers:
   zhipu:
     base_url: "https://chatglm.cn"
     enabled: true
+  minimax:
+    base_url: "https://agent.minimaxi.com"
+    enabled: true

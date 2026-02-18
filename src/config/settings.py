@@ -49,6 +49,12 @@ class ZhipuConfig(BaseSettings):
     token: Optional[str] = None
 
 
+class MiniMaxConfig(BaseSettings):
+    base_url: str = "https://agent.minimaxi.com"
+    enabled: bool = True
+    token: Optional[str] = None
+
+
 class ProviderConfig(BaseSettings):
     deepseek: DeepSeekConfig = Field(default_factory=DeepSeekConfig)
     kimi: KimiConfig = Field(default_factory=KimiConfig)
@@ -56,6 +62,7 @@ class ProviderConfig(BaseSettings):
     doubao: DoubaoConfig = Field(default_factory=DoubaoConfig)
     qwen: QwenConfig = Field(default_factory=QwenConfig)
     zhipu: ZhipuConfig = Field(default_factory=ZhipuConfig)
+    minimax: MiniMaxConfig = Field(default_factory=MiniMaxConfig)
 
 
 class Config(BaseSettings):
@@ -76,6 +83,7 @@ class Config(BaseSettings):
         doubao_token = os.getenv("DOUBAO_TOKEN")
         qwen_token = os.getenv("QWEN_TOKEN")
         zhipu_token = os.getenv("ZHIPU_TOKEN")
+        minimax_token = os.getenv("MINIMAX_TOKEN")
         
         if config_data.get("providers"):
             if deepseek_token:
@@ -90,6 +98,8 @@ class Config(BaseSettings):
                 config_data["providers"]["qwen"]["token"] = qwen_token
             if zhipu_token:
                 config_data["providers"]["zhipu"]["token"] = zhipu_token
+            if minimax_token:
+                config_data["providers"]["minimax"]["token"] = minimax_token
         
         return cls(**config_data)
 
