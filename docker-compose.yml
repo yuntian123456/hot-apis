@@ -1,0 +1,13 @@
+version: '3.8'
+
+services:
+  hot-apis:
+    # 强制固定拉取 latest 标签
+    image: yuntian123456/hot-apis:latest
+    container_name: hot-apis
+    restart: always
+    ports:
+      - "8000:8000"
+    volumes:
+      # 挂载本地配置文件，保证重新拉取镜像后 Token 数据不丢失
+      - ./.env:/app/.env
