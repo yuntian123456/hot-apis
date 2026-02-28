@@ -24,4 +24,5 @@ COPY . .
 EXPOSE 8000
 
 # 启动服务
-CMD["python", "main.py"]
+CMD ["python", "main.py"]
+
