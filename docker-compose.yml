@@ -7,7 +7,7 @@ services:
     container_name: hot-apis
     restart: always
     ports:
-      - "8000:8000"   # 宿主机端口:容器内端口，左侧可按需修改
+      - "8200:8000"   # 宿主机端口:容器内端口，左侧可按需修改
     environment:
       - TZ=Asia/Shanghai
       # - RATE_LIMIT_MS=3000   # 全局控频间隔（毫秒），0=关闭；优先级高于 config.yaml

@@ -90,7 +90,8 @@ async def stream(prepared: Prepared, provider, request: ChatCompletionRequest) -
             id=chunk_id, created=created, model=prepared.model,
             choices=[StreamChoice(index=0, delta=delta, finish_reason=finish_reason)],
         )
-        return f"data: {chunk.model_dump_json(exclude_unset=True, exclude_none=True)}\n\n"
+        # 只按 None 过滤，不按"未显式设置"过滤，保证 object 等默认字段始终在输出里
+        return f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
 
     def frames_for(events: List[Event]) -> List[str]:
         lines: List[str] = []
@@ -127,8 +128,9 @@ async def stream(prepared: Prepared, provider, request: ChatCompletionRequest) -
             yield line
         yield frame(DeltaMessage(), "tool_calls" if parser.has_tool_calls() else "stop")
     except Exception as exc:
-        payload = json.dumps({"error": {"message": str(exc), "type": "internal_error"}})
-        yield f"data: {payload}\n\n"
+        # 部分客户端（如 Octop）不解析 {"error": ...} 裸错误帧（KeyError: 'id'），
+        # 改用标准 chunk 信封把错误文本作为内容发出，finish 后正常收尾
+        yield frame(DeltaMessage(content=f"[上游错误] {exc}"), "stop")
     finally:
         parser = None            # 生成级状态回收（destroy 的等价物）
     yield "data: [DONE]\n\n"

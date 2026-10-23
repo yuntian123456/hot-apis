@@ -303,13 +303,25 @@ async def stream_chat_completion(
 ) -> AsyncGenerator[str, None]:
     try:
         async for chunk in provider.chat_completion_stream(request):
-            data = chunk.model_dump_json(exclude_unset=True, exclude_none=True)
+            data = chunk.model_dump_json(exclude_none=True)
             yield f"data: {data}\n\n"
-        
+
         yield "data: [DONE]\n\n"
     except Exception as e:
-        error_data = json.dumps({"error": {"message": str(e), "type": "internal_error"}})
-        yield f"data: {error_data}\n\n"
+        # 流已开始后无法改 HTTP 状态码；部分客户端（如 Octop）不解析
+        # {"error": ...} 裸错误帧，改用标准 chunk 信封把错误文本作为内容发出
+        data = ChatCompletionChunk(
+            id=f"chatcmpl-{uuid.uuid4().hex[:8]}",
+            created=int(time.time()),
+            model=request.model,
+            choices=[StreamChoice(
+                index=0,
+                delta=DeltaMessage(content=f"[上游错误] {e}"),
+                finish_reason="stop",
+            )]
+        ).model_dump_json(exclude_none=True)
+        yield f"data: {data}\n\n"
+        yield "data: [DONE]\n\n"
 
 
 @app.exception_handler(HTTPException)
