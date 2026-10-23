@@ -65,7 +65,13 @@ class DeepSeekProvider(BaseProvider):
         )
         response.raise_for_status()
         data = response.json()
-        return data["data"]["biz_data"]["id"]
+        try:
+            return data["data"]["biz_data"]["id"]
+        except (KeyError, TypeError):
+            raise RuntimeError(
+                "DeepSeek 会话创建返回非预期结构（多为 Token 失效或账号触发风控），"
+                f"实际响应：{json.dumps(data, ensure_ascii=False)[:500]}"
+            ) from None
     
     async def _get_pow_challenge(self, client: httpx.AsyncClient, target_path: str = "/api/v0/chat/completion") -> Dict:
         response = await client.post(
@@ -75,7 +81,13 @@ class DeepSeekProvider(BaseProvider):
         )
         response.raise_for_status()
         data = response.json()
-        return data["data"]["biz_data"]["challenge"]
+        try:
+            return data["data"]["biz_data"]["challenge"]
+        except (KeyError, TypeError):
+            raise RuntimeError(
+                "DeepSeek PoW 挑战获取返回非预期结构（多为 Token 失效或账号触发风控），"
+                f"实际响应：{json.dumps(data, ensure_ascii=False)[:500]}"
+            ) from None
     
     def _solve_pow(self, challenge: Dict) -> str:
         return solve_pow_challenge(challenge)
