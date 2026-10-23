@@ -358,6 +358,9 @@ class DoubaoProvider(BaseProvider):
             # 记录各事件类型的首个载荷样本，零内容时回传给客户端定位
             saw_content = False
             type_samples: Dict[str, str] = {}
+            status_code = response.status_code
+            content_type = response.headers.get("content-type", "")
+            raw_head = ""  # 响应体开头（零事件时用于判断返回的是 JSON/HTML/空）
 
             def _sample(event_type: str, payload: Any) -> None:
                 if event_type in type_samples:
@@ -372,6 +375,11 @@ class DoubaoProvider(BaseProvider):
                 samples = " ｜ ".join(
                     f"{t}: {s}" for t, s in list(type_samples.items())[:5]
                 )
+                meta = f"HTTP {status_code}，Content-Type: {content_type or '<无>'}，响应开头：{raw_head[:300] or '<空>'}"
+                if samples:
+                    detail = f"事件样本：{samples}；响应：{meta}"
+                else:
+                    detail = f"完全没有 SSE 事件。响应：{meta}"
                 return ChatCompletionChunk(
                     id=chunk_id,
                     model=request.model,
@@ -381,7 +389,7 @@ class DoubaoProvider(BaseProvider):
                             index=0,
                             delta=DeltaMessage(content=(
                                 "[豆包调试] 流结束但未解析到任何内容（上游可能改了响应结构或返回了错误）。"
-                                f"收到的事件样本：{samples or '完全没有 SSE 事件，可能返回了非流式内容'}"
+                                + detail
                             )),
                             finish_reason="stop"
                         )
@@ -389,6 +397,8 @@ class DoubaoProvider(BaseProvider):
                 )
 
             async for chunk in response.aiter_text():
+                if len(raw_head) < 300:
+                    raw_head = (raw_head + chunk)[:300]
                 buffer += chunk
 
                 while "\n\n" in buffer:
