@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import Optional, List, Dict, Any, Literal, Union
 from datetime import datetime
 
@@ -39,10 +39,23 @@ class ToolCallDelta(BaseModel):
 
 class ChatMessage(BaseModel):
     role: Literal["system", "user", "assistant", "tool"]
-    content: Optional[str] = None
+    content: Optional[Union[str, List[Dict[str, Any]]]] = None
     name: Optional[str] = None
     tool_calls: Optional[List[ToolCall]] = None
     tool_call_id: Optional[str] = None
+
+    @field_validator("content", mode="before")
+    @classmethod
+    def _flatten_content(cls, v):
+        # OpenAI 允许 content 为内容片段数组（Octop 等客户端的 system 提示词即该格式），
+        # 上游 Web 平台只收纯文本，这里统一压平：取全部 text 片段拼接，非文本片段忽略
+        if isinstance(v, list):
+            return "".join(
+                part.get("text", "")
+                for part in v
+                if isinstance(part, dict) and part.get("type") == "text"
+            )
+        return v
 
 
 class ChatCompletionRequest(BaseModel):
