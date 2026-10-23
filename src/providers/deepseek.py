@@ -65,13 +65,18 @@ class DeepSeekProvider(BaseProvider):
         )
         response.raise_for_status()
         data = response.json()
+        # 2026-10 观测到新版结构：data.biz_data.chat_session.id；旧版为 data.biz_data.id
         try:
-            return data["data"]["biz_data"]["id"]
+            biz = data["data"]["biz_data"]
+            sid = (biz.get("chat_session") or biz).get("id")
         except (KeyError, TypeError):
+            sid = None
+        if not sid:
             raise RuntimeError(
                 "DeepSeek 会话创建返回非预期结构（多为 Token 失效或账号触发风控），"
                 f"实际响应：{json.dumps(data, ensure_ascii=False)[:500]}"
-            ) from None
+            )
+        return sid
     
     async def _get_pow_challenge(self, client: httpx.AsyncClient, target_path: str = "/api/v0/chat/completion") -> Dict:
         response = await client.post(

@@ -7,3 +7,7 @@ python-dotenv>=1.0.0
 PyYAML>=6.0.1
 # DeepSeek PoW 挑战求解：src/providers/pow.py 需要加载 sha3_wasm_bg.wasm
 wasmtime>=41.0.0
+# 逆向 provider 显式声明了 Accept-Encoding: br, zstd；不装解码包时上游真返回
+# 压缩内容会导致 aiter_lines 报 'utf-8' codec can't decode（如智谱 GLM）
+brotli>=1.1.0
+zstandard>=0.22.0
