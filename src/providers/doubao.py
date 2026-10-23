@@ -352,18 +352,52 @@ class DoubaoProvider(BaseProvider):
             cookies=self._get_cookies_dict()
         ) as response:
             response.raise_for_status()
-            
+
             buffer = ""
+            # 空流诊断：豆包解析器只认 4 种事件，上游改结构/返回错误时会被静默忽略，
+            # 记录各事件类型的首个载荷样本，零内容时回传给客户端定位
+            saw_content = False
+            type_samples: Dict[str, str] = {}
+
+            def _sample(event_type: str, payload: Any) -> None:
+                if event_type in type_samples:
+                    return
+                try:
+                    text = payload if isinstance(payload, str) else json.dumps(payload, ensure_ascii=False)
+                except (TypeError, ValueError):
+                    text = str(payload)
+                type_samples[event_type or "<无事件名>"] = text[:160]
+
+            def _diag_chunk() -> ChatCompletionChunk:
+                samples = " ｜ ".join(
+                    f"{t}: {s}" for t, s in list(type_samples.items())[:5]
+                )
+                return ChatCompletionChunk(
+                    id=chunk_id,
+                    model=request.model,
+                    created=created,
+                    choices=[
+                        StreamChoice(
+                            index=0,
+                            delta=DeltaMessage(content=(
+                                "[豆包调试] 流结束但未解析到任何内容（上游可能改了响应结构或返回了错误）。"
+                                f"收到的事件样本：{samples or '完全没有 SSE 事件，可能返回了非流式内容'}"
+                            )),
+                            finish_reason="stop"
+                        )
+                    ]
+                )
+
             async for chunk in response.aiter_text():
                 buffer += chunk
-                
+
                 while "\n\n" in buffer:
                     event_str, buffer = buffer.split("\n\n", 1)
-                    
+
                     lines = event_str.strip().split("\n")
                     event_type = ""
                     data = {}
-                    
+
                     for line in lines:
                         line = line.strip()
                         if line.startswith("event:"):
@@ -373,8 +407,11 @@ class DoubaoProvider(BaseProvider):
                             try:
                                 data = json.loads(data_str)
                             except json.JSONDecodeError:
-                                continue
-                    
+                                data = {}
+                                _sample(f"{event_type or '?'}(非JSON)", data_str)
+
+                    _sample(event_type, data)
+
                     if event_type == "SSE_ACK":
                         if isinstance(data, dict):
                             ack_meta = data.get("ack_client_meta", {})
@@ -383,7 +420,7 @@ class DoubaoProvider(BaseProvider):
                                 chunk_id = session.conversation_id
                             if not session.section_id:
                                 session.section_id = ack_meta.get("section_id", "")
-                    
+
                     elif event_type == "STREAM_MSG_NOTIFY":
                         if isinstance(data, dict):
                             content = data.get("content", {})
@@ -393,6 +430,7 @@ class DoubaoProvider(BaseProvider):
                                     text_block = block.get("content", {}).get("text_block", {})
                                     text = text_block.get("text", "")
                                     if text:
+                                        saw_content = True
                                         yield ChatCompletionChunk(
                                             id=chunk_id,
                                             model=request.model,
@@ -405,11 +443,12 @@ class DoubaoProvider(BaseProvider):
                                                 )
                                             ]
                                         )
-                    
+
                     elif event_type == "CHUNK_DELTA":
                         if isinstance(data, dict):
                             text = data.get("text", "")
                             if text:
+                                saw_content = True
                                 yield ChatCompletionChunk(
                                     id=chunk_id,
                                     model=request.model,
@@ -422,8 +461,10 @@ class DoubaoProvider(BaseProvider):
                                         )
                                     ]
                                 )
-                    
+
                     elif event_type == "SSE_REPLY_END":
+                        if not saw_content:
+                            yield _diag_chunk()
                         yield ChatCompletionChunk(
                             id=chunk_id,
                             model=request.model,
@@ -437,6 +478,9 @@ class DoubaoProvider(BaseProvider):
                             ]
                         )
                         return
+
+        if not saw_content:
+            yield _diag_chunk()
     
     def get_model_mapping(self, model: str) -> str:
         model_lower = model.lower()
