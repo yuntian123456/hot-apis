@@ -1,13 +1,18 @@
-version: '3.8'
-
 services:
   hot-apis:
-    # 强制固定拉取 latest 标签
+    # 预构建镜像（随 main 分支自动构建，支持 amd64/arm64）；
+    # 本地已克隆仓库时，docker compose up -d --build 可现场构建替换
     image: yuntian123456/hot-apis:latest
+    build: .
     container_name: hot-apis
     restart: always
     ports:
-      - "8000:8000"
+      - "8000:8000"   # 宿主机端口:容器内端口，左侧可按需修改
+    environment:
+      - TZ=Asia/Shanghai
+      # - RATE_LIMIT_MS=3000   # 全局控频间隔（毫秒），0=关闭；优先级高于 config.yaml
     volumes:
-      # 挂载本地配置文件，保证重新拉取镜像后 Token 数据不丢失
-      - ./.env:/app/.env
+      # 挂载 Token 配置：启动前当前目录必须已存在 .env 文件（可从 .env.example 复制），否则会被创建成同名目录导致启动失败
+      - ./.env:/app/.env:ro
+      # 需要自定义 config.yaml（如按平台控频 overrides）时取消下一行注释
+      # - ./config.yaml:/app/config.yaml:ro

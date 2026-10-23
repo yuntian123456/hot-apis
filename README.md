@@ -1,351 +1,199 @@
-# 多模型API中转站
+# hot-apis · 多模型 API 中转站
 
-一个统一的 OpenAI 兼容 API 中转服务，通过逆向工程实现对多个国内主流大模型平台的调用。
+一个统一的 **OpenAI 兼容** API 服务：一个地址、一套协议，调用多个国内主流大模型平台。
+通过逆向 Web 会话实现，**已支持工具调用（Agent 可直接接入）**。
 
-## 支持的平台
+[English](README_EN.md) | 中文
 
-| 平台 | 模型 | 状态 |
-|------|------|------|
-| DeepSeek | deepseek-chat, deepseek-reasoner, deepseek-r1 | ✅ |
-| Kimi (月之暗面) | kimi, kimi-vision | ✅ |
-| Metaso (秘塔AI搜索) | metaso, metaso-concise, metaso-detail, metaso-research | ✅ |
-| 豆包 (字节跳动) | doubao, doubao-pro, doubao-lite, doubao-1.5-pro | ✅ |
-| 千问 (通义千问) | qwen, qwen3, qwen3-max, qwen3-flash, qwen-long | ✅ |
-| 智谱清言 (ChatGLM) | zhipu, chatglm, glm-5 | ✅ |
-| MiniMax (海螺AI) | minimax, minimax-auto, MiniMax-M2.5 | ✅ |
+> **使用范围声明**：本项目仅供**个人学习与技术研究所用**，禁止任何商业用途或对外提供服务。
+> 逆向接口不受官方保障，随时可能失效；如需稳定服务，请直接使用各平台**官方 API**（见下文推荐）。
 
-## 功能特性
+## 功能
 
-- **OpenAI 兼容接口**：完全兼容 OpenAI API 格式，可直接替换现有应用
-- **流式响应**：支持 SSE 流式输出
-- **多模型支持**：一个服务支持多个大模型平台
-- **思维链输出**：支持 DeepSeek R1、GLM 等模型的思维链内容输出
+- **OpenAI 兼容**：`/v1/chat/completions` + `/v1/models`，用 openai SDK 改个 `base_url` 即可
+- **工具调用 ✅**：支持标准 `tools` / `tool_calls` / `role:"tool"`，可直接接入 Cline、Roo Code、
+  Continue 等 agent（上游无原生 function calling，由内置协议翻译层模拟实现）
+- **流式响应**：SSE 增量输出
+- **思维链**：R1 / GLM 等模型的思考过程随响应输出
+- **Token 自动续期**：Kimi access_token（约 15 分钟）自动刷新
+
+## 支持平台
+
+| 平台 | 状态 | 代表模型 |
+|------|------|----------|
+| DeepSeek | ✅ | deepseek-flash, deepseek-reasoner |
+| Kimi | ✅ | kimi-k3, kimi-k2.7-code |
+| 豆包 | ✅ | doubao-seed-2.1-pro |
+| 智谱清言 | ⚠️ 间歇返回空 | glm-5.3 |
+| MiniMax | ✅ | MiniMax-M3 |
+| 千问 | ❌ 上游风控 | qwen3.8-max |
+| 秘塔 | ❌ 上游限流 | metaso-research |
+
+完整模型清单：启动后 `GET /v1/models`，或看 `src/providers/*.py` 的 `models` 属性。
 
 ## 快速开始
 
-### A.🐳 Docker Compose 部署指南
-你需要创建两个必要的文件：docker-compose.yml 和 .env
+### 方式一：Docker Compose（推荐）
 
-#创建 docker-compose.yml
-新建 docker-compose.yml 文件，并填入以下内容：
+无需安装 Python 环境，两步启动：
 
 ```bash
-version: '3.8'
+# 1. 下载 docker-compose.yml 和 .env 配置模板
+curl -fsSL https://raw.githubusercontent.com/yuntian123456/hot-apis/main/docker-compose.yml -o docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/yuntian123456/hot-apis/main/.env.example -o .env
 
-services:
-  hot-apis:
-    image: yuntian123456/hot-apis:latest
-    container_name: hot-apis
-    restart: always
-    ports:
-      - "8000:8000"  # 宿主机端口:容器内端口，左侧的8000可根据需要修改
-    volumes:
-      # 挂载本地配置文件，保证重新拉取镜像后数据不丢失
-      - ./.env:/app/.env
-    environment:
-      - TZ=Asia/Shanghai
+# 2. 编辑 .env，填入至少一个平台的 Token（获取方法见下文），然后启动
+docker compose up -d
 ```
-⚠️ 注意：在启动前，必须确保当前目录下存在 .env 文件，否则 Docker 可能错误。
 
+启动后服务运行在 `http://localhost:8000`（修改 `docker-compose.yml` 的 `ports` 可换宿主机端口）。
 
-### B.本地部署
-### 1. 安装依赖
+- 镜像 `yuntian123456/hot-apis:latest` 随 main 分支自动构建（amd64 / arm64）
+- `.env` 以只读方式挂载进容器；修改 Token 后执行 `docker compose restart` 生效
+- **启动前必须存在 `.env` 文件**（可为空），否则 Docker 会把它创建成同名目录导致启动失败
+- 调整控频：在 `.env` 中加一行 `RATE_LIMIT_MS=3000`（毫秒，`0` 关闭）；
+  要自定义 `config.yaml`（含按平台控频 `overrides`），取消 compose 文件中对应挂载行的注释
+
+已克隆本仓库的话，也可直接本地构建：
+
+```bash
+git clone https://github.com/yuntian123456/hot-apis.git && cd hot-apis
+cp .env.example .env   # 填入 Token
+docker compose up -d --build
+```
+
+### 方式二：本地运行
+
+安装依赖：
 
 ```bash
 pip install -r requirements.txt
+cp .env.example .env      # 填入至少一个平台的 Token（获取方法见下表）
+python main.py            # 默认 http://localhost:8000（config.yaml 可改）
 ```
-
-### 2. 配置 Token
-
-复制 `.env.example` 为 `.env`，并填入你的 Token：
-
-```bash
-cp .env.example .env
-```
-
-### 3. 启动服务
-
-```bash
-python main.py
-```
-
-服务将在 `http://localhost:8000` 启动。
-
-## Token 获取指南
-
-### DeepSeek
-
-**获取方式**：
-1. 访问 [DeepSeek 官网](https://chat.deepseek.com/) 并登录
-2. 打开浏览器开发者工具 (F12)
-3. 切换到 Network 标签页
-4. 发送一条消息
-5. 找到任意 API 请求，查看请求头中的 `authorization` 字段
-6. 复制 `Bearer ` 后面的 Token 值
-
-**Token 格式**：一串 Base64 编码的字符串
-
-**原理**：DeepSeek 使用 Bearer Token 认证，Token 中包含用户会话信息。服务会自动处理 PoW (Proof of Work) 挑战验证。
-
----
-
-### Kimi (月之暗面)
-
-**获取方式**：
-1. 访问 [Kimi 官网](https://kimi.moonshot.cn/) 并登录
-2. 打开浏览器开发者工具 (F12)
-3. 切换到 Application 标签页
-4. 在左侧找到 Cookies -> https://kimi.moonshot.cn
-5. 找到 `kimi_access_token` 或 `access_token` 的值
-
-**Token 格式**：JWT 格式，以 `eyJ` 开头的长字符串
-
-**原理**：Kimi 使用 WebSocket 进行实时通信，Token 用于建立连接时的身份验证。服务实现了 WebSocket 协议的完整逆向，包括消息帧的编解码。
-
----
-
-### Metaso (秘塔AI搜索)
-
-**获取方式**：
-1. 访问 [Metaso 官网](https://metaso.cn/) 并登录
-2. 打开浏览器开发者工具 (F12)
-3. 切换到 Application 标签页
-4. 在左侧找到 Cookies -> https://metaso.cn
-5. 找到 `uid` 和 `sid` 两个 Cookie 的值
-6. 将两者用 `-` 连接：`uid-sid`
-
-**Token 格式**：`uid-sid` 格式，例如：`your_uid_here-your_sid_here`
-
-**原理**：Metaso 使用 uid 和 sid 组合进行用户身份验证，服务会自动构造包含这些信息的 Cookie。
-
----
-
-### 豆包 (字节跳动)
-
-**获取方式**：
-1. 访问 [豆包官网](https://www.doubao.com/) 并登录
-2. 打开浏览器开发者工具 (F12)
-3. 切换到 Application 标签页
-4. 在左侧找到 Cookies -> https://www.doubao.com
-5. 找到 `s_v_web_id` 或 `sessionid` 的值
-
-**Token 格式**：一串 32 位十六进制字符，例如：`your_32_char_hex_token_here`
-
-**原理**：豆包使用字节跳动内部的会话认证机制，Token 用于标识用户会话。服务实现了完整的请求签名和设备指纹生成。
-
----
-
-### 千问 (通义千问)
-
-**获取方式**：
-1. 访问 [通义千问官网](https://www.qianwen.com/) 并登录
-2. 打开浏览器开发者工具 (F12)
-3. 切换到 Application 标签页
-4. 在左侧找到 Cookies -> https://www.qianwen.com
-5. 复制完整的 Cookie 字符串（包含 `tongyi_sso_ticket`, `XSRF-TOKEN` 等）
-
-**Token 格式**：完整的 Cookie 字符串，例如：
-```
-UM_distinctid=xxx; tongyi_sso_ticket=xxx; XSRF-TOKEN=xxx; ...
-```
-
-**原理**：千问使用阿里云的 SSO 认证体系，需要完整的 Cookie 来通过身份验证。服务会自动解析 Cookie 中的关键信息。
-
----
-
-### 智谱清言 (ChatGLM)
-
-**获取方式**：
-1. 访问 [智谱清言官网](https://chatglm.cn/) 并登录
-2. 打开浏览器开发者工具 (F12)
-3. 切换到 Application 标签页
-4. 在左侧找到 Cookies -> https://chatglm.cn
-5. 找到 `chatglm_refresh_token` 的值
-
-**Token 格式**：JWT 格式，以 `eyJ` 开头的长字符串
-
-**原理**：智谱清言使用 JWT Token 进行认证，分为 access_token 和 refresh_token。服务使用 refresh_token 自动获取 access_token，并实现了请求签名算法（MD5）。
-
-**签名算法**：
-```python
-timestamp = generate_timestamp()  # 特殊格式的时间戳
-x_nonce = uuid.uuid4().hex        # 随机 nonce
-secret = "8a1317a7468aa3ad86e997d08f3f31cb"  # 固定密钥
-sign = md5(f"{timestamp}-{x_nonce}-{secret}")
-```
-
----
-
-### MiniMax (海螺AI)
-
-**获取方式**：
-1. 访问 [MiniMax Agent官网](https://agent.minimaxi.com/) 并登录
-2. 打开浏览器开发者工具 (F12)
-3. 切换到 Application 标签页
-4. 在左侧找到 Local Storage -> https://agent.minimaxi.com
-5. 找到 `_token` 的值
-
-**Token 格式**：JWT 格式，以 `eyJ` 开头的长字符串
-
-**原理**：MiniMax Agent 使用 JWT Token 进行认证，Token 存储在 LocalStorage 中。服务实现了完整的请求签名算法（MD5），包括：
-- `x-signature`: MD5(timestamp + secret + body)
-- `yy`: MD5(encoded_path + "_" + body + md5(time_ms) + "ooui")
-
-**签名算法**：
-```python
-# x-signature 生成
-signature = md5(f"{timestamp}I*7Cf%WZ#S&%1RlZJ&C2{body}")
-
-# yy 生成  
-yy = md5(f"{encoded_path}_{body}{md5(str(time_ms))}ooui")
-```
-
-**支持模型**：
-- `minimax` / `minimax-auto` - Auto 模式
-- `MiniMax-M2.5` - MiniMax M2.5 对话模型
-
-**注意**：MiniMax Agent 平台与 MiniMax 开放 API 是不同的服务，模型名称也不同。
-
----
-
-## API 使用示例
-
-### 列出可用模型
-
-```bash
-curl http://localhost:8000/v1/models
-```
-
-### 对话补全 (非流式)
-
-```bash
-curl http://localhost:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "deepseek-chat",
-    "messages": [{"role": "user", "content": "你好"}],
-    "stream": false
-  }'
-```
-
-### 对话补全 (流式)
-
-```bash
-curl http://localhost:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "deepseek-chat",
-    "messages": [{"role": "user", "content": "你好"}],
-    "stream": true
-  }'
-```
-
-### Python 示例
 
 ```python
 from openai import OpenAI
 
-client = OpenAI(
-    base_url="http://localhost:8000/v1",
-    api_key="not-needed"
-)
-
-response = client.chat.completions.create(
-    model="deepseek-chat",
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="not-needed")
+stream = client.chat.completions.create(
+    model="deepseek-flash",
     messages=[{"role": "user", "content": "你好"}],
-    stream=True
+    stream=True,
 )
-
-for chunk in response:
-    if chunk.choices[0].delta.content:
-        print(chunk.choices[0].delta.content, end="")
+for chunk in stream:
+    print(chunk.choices[0].delta.content or "", end="")
 ```
 
-## 思维链输出
+## 工具调用
 
-对于支持思维链的模型（如 DeepSeek R1、GLM），思维链内容会以特殊格式输出：
+把 `tools` 按标准 OpenAI 格式传入即可，响应里拿标准 `tool_calls`：
 
-- DeepSeek R1：思维链内容以 `<think:内容>` 格式输出
-- GLM：思维链内容以 `<think:内容>` 格式输出
-
-示例输出：
-```
-<think:让我思考一下这个问题...>好的，我来回答你的问题...
-```
-
-## 项目结构
-
-```
-nxapi/
-├── src/
-│   ├── api.py              # API 路由定义
-│   ├── main.py             # 应用入口
-│   ├── config/
-│   │   └── settings.py     # 配置管理
-│   ├── models/
-│   │   └── schemas.py      # 数据模型
-│   └── providers/
-│       ├── base.py         # Provider 基类
-│       ├── deepseek.py     # DeepSeek 实现
-│       ├── kimi.py         # Kimi 实现
-│       ├── metaso.py       # Metaso 实现
-│       ├── doubao.py       # 豆包 实现
-│       ├── qwen.py         # 千问 实现
-│       ├── zhipu.py        # 智谱 实现
-│       └── minimax.py      # MiniMax 实现
-├── config.yaml             # 服务配置
-├── .env                    # Token 配置
-├── requirements.txt        # 依赖列表
-└── main.py                 # 启动脚本
+```python
+resp = client.chat.completions.create(
+    model="deepseek-flash",
+    messages=[{"role": "user", "content": "苏州明天天气怎样"}],
+    tools=[{
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "联网搜索",
+            "parameters": {"type": "object",
+                           "properties": {"query": {"type": "string"}},
+                           "required": ["query"]},
+        },
+    }],
+)
+print(resp.choices[0].finish_reason)   # tool_calls
+print(resp.choices[0].message.tool_calls[0].function)
 ```
 
-## 技术原理
+工具结果以 `{"role": "tool", "tool_call_id": "...", "content": "..."}` 回传即可多轮循环。
 
-### 逆向工程方法
+| 平台 | 工具调用 | 备注 |
+|---|---|---|
+| DeepSeek / Kimi / 豆包 | ✅ 实测 100% | agent 场景建议 `stream: true` |
+| 智谱 | ⚠️ | provider 间歇返回空（上游问题），暂不建议用于 agent |
+| 千问 / 秘塔 | ❌ | 上游风控/限流，provider 不可用 |
 
-本项目通过以下方式进行 API 逆向：
+### 实测演示
 
-1. **网络抓包分析**：使用浏览器开发者工具捕获 API 请求
-2. **请求参数分析**：分析请求头、请求体、认证方式
-3. **签名算法还原**：逆向分析签名/加密算法并用 Python 实现
-4. **协议模拟**：模拟完整的 HTTP/WebSocket 通信流程
+下方截图来自自研 agent 项目 **[react-agent](https://github.com/zh2673-git/react-agent)**
+（Rust 内核，性能拉满）。接入本服务后，它能有效完成工具调用与技能（skill）装载，日常使用足够。
 
-### 各平台技术要点
+**接入配置**：provider 选「openai 兼容」，模型 `deepseek-flash`，端点指向本服务
+`http://127.0.0.1:8000/v1`——
 
-| 平台 | 认证方式 | 特殊处理 |
-|------|----------|----------|
-| DeepSeek | Bearer Token | PoW 挑战验证、SHA3 哈希计算 |
-| Kimi | JWT Token | WebSocket 通信、二进制帧编解码 |
-| Metaso | Cookie (uid+sid) | 搜索模式参数 |
-| 豆包 | Session Cookie | 设备指纹生成、请求签名 |
-| 千问 | Cookie (SSO) | XSRF Token 处理 |
-| 智谱 | JWT Token | MD5 签名、Token 自动刷新 |
-| MiniMax | JWT Token | LocalStorage Token 认证 |
+![react-agent 接入本服务的配置](docs/images/react-agent-config.png)
 
-### 安全说明
+**运行效果**：`load_skill` 装载 media-gen 技能（10ms），随后成功调用 `image_gen` 生图——
 
-- 所有 Token 仅存储在本地 `.env` 文件中
-- 不会向任何第三方发送 Token
-- 建议定期更新 Token 以确保安全
+![react-agent 技能装载与工具调用](docs/images/react-agent-skill.png)
 
-## 注意事项
+> 其他 agent（Cline / Roo Code / Continue 等）**未实测，效果不作保证**。
+> 本服务暴露的是标准 OpenAI `tools` 协议，理论上均可接入，欢迎自行验证并反馈。
 
-1. **仅供学习研究**：本项目仅用于技术研究和学习，请勿用于商业用途
-2. **API 稳定性**：由于是逆向实现，官方 API 变更可能导致服务不可用
-3. **使用限制**：请遵守各平台的使用条款和频率限制
-4. **Token 有效期**：各平台 Token 有不同有效期，过期需重新获取
+### 控频（重要）
 
-## 常见问题
+上游对请求频率比较敏感：同一平台高频连续调用会触发限流（返回空内容），也会影响
+账号的可用状态。因此 relay 内置每平台控频——同平台请求强制最小间隔，并发请求自动排队：
 
-### Q: Token 过期了怎么办？
-A: 重新按照上述方法获取新的 Token 并更新 `.env` 文件。
+- 默认 **3000ms**/平台；调整：`config.yaml` 的 `rate_limit.min_interval_ms`
+  （可按平台 `overrides`）或环境变量 `RATE_LIMIT_MS`；设为 `0` 关闭（风险自负）
+- 若某平台开始持续返回空/异常，先暂停该平台一段时间，恢复后保持低频
+- agent 多轮工具调用循环同样受控频保护，无需额外配置
+- 需要高频/并发的场景，请直接用官方 API（见上文推荐）
 
-### Q: 为什么有些模型响应很慢？
-A: 部分模型（如 DeepSeek R1）会输出思维链内容，响应时间较长是正常的。
+## Token 获取
 
-### Q: 如何获取思维链内容？
-A: 思维链内容会包含在响应中，以 `<think:...>` 格式标记。
+登录对应平台 → F12 开发者工具 → 按下表取值 → 填进 `.env`（留空的平台即不启用）：
+
+| 环境变量 | 登录地址 | 取值位置 | 格式 |
+|---|---|---|---|
+| `DEEPSEEK_TOKEN` | chat.deepseek.com | F12 → Network → 请求头 `authorization` 中 `Bearer ` 后的值 | Base64 串 |
+| `KIMI_TOKEN` | www.kimi.com | F12 → Application → Local Storage → `access_token` | JWT（`eyJ` 开头） |
+| `KIMI_REFRESH_TOKEN` | 同上 | 同上 → `refresh_token`（强烈建议填写，自动续期） | JWT |
+| `METASO_TOKEN` | metaso.cn | F12 → Application → Cookies → `uid` 与 `sid` 用 `-` 连接 | `uid-sid` |
+| `DOUBAO_TOKEN` | www.doubao.com | F12 → Application → Cookies → `s_v_web_id` 或 `sessionid` | 32 位十六进制 |
+| `QWEN_TOKEN` | www.qianwen.com | F12 → Application → Cookies → 复制**完整** Cookie 串 | Cookie 串 |
+| `ZHIPU_TOKEN` | chatglm.cn | F12 → Application → Cookies → `chatglm_refresh_token` | JWT |
+| `MINIMAX_TOKEN` | agent.minimaxi.com | F12 → Application → Local Storage → `_token` | JWT |
+
+> Token 基于 Web 会话，过期后（401/403）重新按上表获取即可；Kimi 填了 refresh_token 可免维护。
+
+## ⭐ 建议：Token 荒的正解是官方 API
+
+Web 逆向通道天然不稳：Token 会过期、有频率限制、上游一改版就失效。
+**如果你的用途超出个人尝鲜，请直接使用官方 API**——全部 OpenAI 兼容，
+把上面示例里的 `base_url` 换掉即可，代码一行不用改：
+
+| 平台 | 官方 API Base URL | 控制台 / Key |
+|---|---|---|
+| DeepSeek | `https://api.deepseek.com` | [platform.deepseek.com](https://platform.deepseek.com) |
+| Kimi (Moonshot) | `https://api.moonshot.cn/v1` | [platform.moonshot.cn](https://platform.moonshot.cn) |
+| 智谱 GLM | `https://open.bigmodel.cn/api/paas/v4` | [open.bigmodel.cn](https://open.bigmodel.cn) |
+| 通义千问（百炼） | `https://dashscope.aliyuncs.com/compatible-mode/v1` | [bailian.console.aliyun.com](https://bailian.console.aliyun.com) |
+| 豆包（火山方舟） | `https://ark.cn-beijing.volces.com/api/v3` | [console.volcengine.com/ark](https://console.volcengine.com/ark) |
+| MiniMax | `https://api.minimaxi.com/v1` | [platform.minimaxi.com](https://platform.minimaxi.com) |
+| 秘塔 | 以官网开放平台为准 | [metaso.cn](https://metaso.cn) |
+
+官方 API 的优势：原生 function calling、稳定不限流、有计费与配额保障、模型命名长期有效。
+
+## 已知局限
+
+- 千问、秘塔：上游迁移至风控网关 / 限流策略，纯 HTTP 架构下暂不可用（详见 [docs](docs/)）
+- 智谱：间歇性返回空内容（上游问题，与本项目无关）
+- 模型清单来自 Web 端，个别内部编码未经官方文档确认，以实测为准
+
+## 验证脚本
+
+```bash
+python verify_models.py          # 模型连通性实测
+python verify_models.py --all    # 全量模型
+python verify_tools.py           # 工具调用离线单测（49 断言）
+python verify_tools.py --llm     # 工具调用真实链路用例
+```
 
 ## License
 
-MIT License
+MIT License —— 仅限个人研究使用，请遵守各平台服务条款。

@@ -16,9 +16,17 @@ from .models import (
     ModelList, ModelInfo
 )
 from .providers import DeepSeekProvider, KimiProvider, MetasoProvider, DoubaoProvider, QwenProvider, ZhipuProvider, MiniMaxProvider, BaseProvider
+from .tools import pipeline as tools_pipeline
+from .ratelimit import RateLimiter
 
 
 providers: Dict[str, BaseProvider] = {}
+
+# 每平台控频：同平台请求强制最小间隔（防上游风控/禁言），见 config.yaml rate_limit
+rate_limiter = RateLimiter(
+    default_interval_ms=settings.rate_limit.min_interval_ms,
+    per_provider_ms=settings.rate_limit.overrides,
+)
 
 
 def get_provider_for_model(model: str) -> tuple[str, BaseProvider]:
@@ -35,7 +43,10 @@ def get_provider_for_model(model: str) -> tuple[str, BaseProvider]:
         provider_name = "kimi"
         if provider_name not in providers:
             token = settings.providers.kimi.token
-            providers[provider_name] = KimiProvider(token=token)
+            providers[provider_name] = KimiProvider(
+                token=token,
+                refresh_token=settings.providers.kimi.refresh_token,
+            )
         return provider_name, providers[provider_name]
     
     if any(x in model_lower for x in ["metaso"]):
@@ -84,7 +95,10 @@ def get_provider_for_model(model: str) -> tuple[str, BaseProvider]:
         provider_name = "kimi"
         if provider_name not in providers:
             token = settings.providers.kimi.token
-            providers[provider_name] = KimiProvider(token=token)
+            providers[provider_name] = KimiProvider(
+                token=token,
+                refresh_token=settings.providers.kimi.refresh_token,
+            )
         return provider_name, providers[provider_name]
     
     if settings.providers.metaso.token:
@@ -135,7 +149,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="NXAPI - OpenAI Compatible API",
     description="大模型 API 中转站，支持 DeepSeek、Kimi、Metaso、豆包、千问、智谱清言和 MiniMax",
-    version="1.0.0",
+    version="1.5.0",
     lifespan=lifespan
 )
 
@@ -150,7 +164,7 @@ app.add_middleware(
 
 @app.get("/")
 async def root():
-    return {"message": "NXAPI - OpenAI Compatible API", "version": "1.0.0"}
+    return {"message": "NXAPI - OpenAI Compatible API", "version": "1.5.0"}
 
 
 @app.get("/v1/models", response_model=ModelList)
@@ -158,68 +172,42 @@ async def list_models():
     models = []
     
     if settings.providers.deepseek.token:
-        models.extend([
-            ModelInfo(id="deepseek-chat", owned_by="deepseek"),
-            ModelInfo(id="deepseek-reasoner", owned_by="deepseek"),
-            ModelInfo(id="deepseek-r1", owned_by="deepseek"),
-        ])
+        provider = DeepSeekProvider(token=settings.providers.deepseek.token)
+        for model_id in provider.models:
+            models.append(ModelInfo(id=model_id, owned_by="deepseek"))
     
     if settings.providers.kimi.token:
-        models.extend([
-            ModelInfo(id="kimi", owned_by="moonshot"),
-            ModelInfo(id="kimi-k2.5", owned_by="moonshot"),
-            ModelInfo(id="moonshot-v1-8k", owned_by="moonshot"),
-            ModelInfo(id="moonshot-v1-32k", owned_by="moonshot"),
-            ModelInfo(id="moonshot-v1-128k", owned_by="moonshot"),
-        ])
+        provider = KimiProvider(
+            token=settings.providers.kimi.token,
+            refresh_token=settings.providers.kimi.refresh_token,
+        )
+        for model_id in provider.models:
+            models.append(ModelInfo(id=model_id, owned_by="moonshot"))
     
     if settings.providers.metaso.token:
-        models.extend([
-            ModelInfo(id="metaso", owned_by="metaso"),
-            ModelInfo(id="metaso-concise", owned_by="metaso"),
-            ModelInfo(id="metaso-detail", owned_by="metaso"),
-            ModelInfo(id="metaso-research", owned_by="metaso"),
-            ModelInfo(id="metaso-concise-scholar", owned_by="metaso"),
-            ModelInfo(id="metaso-detail-scholar", owned_by="metaso"),
-            ModelInfo(id="metaso-research-scholar", owned_by="metaso"),
-        ])
+        provider = MetasoProvider(token=settings.providers.metaso.token)
+        for model_id in provider.models:
+            models.append(ModelInfo(id=model_id, owned_by="metaso"))
     
     if settings.providers.doubao.token:
-        models.extend([
-            ModelInfo(id="doubao", owned_by="doubao"),
-            ModelInfo(id="doubao-pro", owned_by="doubao"),
-            ModelInfo(id="doubao-lite", owned_by="doubao"),
-            ModelInfo(id="doubao-1.5-pro", owned_by="doubao"),
-            ModelInfo(id="doubao-1.5-lite", owned_by="doubao"),
-        ])
+        provider = DoubaoProvider(token=settings.providers.doubao.token)
+        for model_id in provider.models:
+            models.append(ModelInfo(id=model_id, owned_by="doubao"))
     
     if settings.providers.qwen.token:
-        models.extend([
-            ModelInfo(id="qwen", owned_by="qwen"),
-            ModelInfo(id="qwen3", owned_by="qwen"),
-            ModelInfo(id="qwen3.5-plus", owned_by="qwen"),
-            ModelInfo(id="qwen3-max", owned_by="qwen"),
-            ModelInfo(id="qwen3-max-thinking", owned_by="qwen"),
-            ModelInfo(id="qwen3-flash", owned_by="qwen"),
-            ModelInfo(id="qwen3-coder", owned_by="qwen"),
-            ModelInfo(id="qwen-vl-plus", owned_by="qwen"),
-            ModelInfo(id="qwen-vl-max", owned_by="qwen"),
-            ModelInfo(id="qwen-long", owned_by="qwen"),
-        ])
+        provider = QwenProvider(token=settings.providers.qwen.token)
+        for model_id in provider.models:
+            models.append(ModelInfo(id=model_id, owned_by="qwen"))
     
     if settings.providers.zhipu.token:
-        models.extend([
-            ModelInfo(id="zhipu", owned_by="zhipu"),
-            ModelInfo(id="chatglm", owned_by="zhipu"),
-            ModelInfo(id="glm-5", owned_by="zhipu"),
-        ])
+        provider = ZhipuProvider(token=settings.providers.zhipu.token)
+        for model_id in provider.models:
+            models.append(ModelInfo(id=model_id, owned_by="zhipu"))
     
     if settings.providers.minimax.token:
-        models.extend([
-            ModelInfo(id="minimax", owned_by="minimax"),
-            ModelInfo(id="minimax-auto", owned_by="minimax"),
-            ModelInfo(id="MiniMax-M2.5", owned_by="minimax"),
-        ])
+        provider = MiniMaxProvider(token=settings.providers.minimax.token)
+        for model_id in provider.models:
+            models.append(ModelInfo(id=model_id, owned_by="minimax"))
     
     return ModelList(data=models)
 
@@ -229,16 +217,69 @@ async def chat_completions(
     request: ChatCompletionRequest,
     authorization: Optional[str] = Header(None)
 ):
+    # ---- R1：不传 tools 时完全走原路径（旧逻辑一行未改，结构性保证 I1）----
+    if not request.tools:
+        # C2：content 放宽为可选后，在非 tools 路径显式拦截，避免语义缝隙
+        if any(message.content is None for message in request.messages):
+            raise HTTPException(
+                status_code=400,
+                detail="content is required when tools are not provided",
+            )
+
+        try:
+            provider_name, provider = get_provider_for_model(request.model)
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        await rate_limiter.acquire(provider_name)
+
+        if request.stream:
+            return StreamingResponse(
+                stream_chat_completion(provider, request),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive",
+                    "X-Accel-Buffering": "no",
+                }
+            )
+
+        try:
+            response = await provider.chat_completion(request)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+        # I1：剥离本次新增字段，保持非 tools 响应与改造前逐字段等价
+        payload = response.model_dump()
+        message = payload["choices"][0]["message"]
+        message.pop("tool_calls", None)
+        message.pop("tool_call_id", None)
+        return JSONResponse(payload)
+
+    # ---- 工具调用路径（方案 A：提示词模拟）----
+    # R4：role=tool 必须携带 tool_call_id
+    if any(message.role == "tool" and not message.tool_call_id for message in request.messages):
+        raise HTTPException(
+            status_code=400,
+            detail="tool_call_id is required when role is tool",
+        )
+
     try:
         provider_name, provider = get_provider_for_model(request.model)
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
-    
+
+    await rate_limiter.acquire(provider_name)
+
+    prepared = tools_pipeline.prepare(request)
+
     if request.stream:
         return StreamingResponse(
-            stream_chat_completion(provider, request),
+            tools_pipeline.stream(prepared, provider, request),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
@@ -246,12 +287,14 @@ async def chat_completions(
                 "X-Accel-Buffering": "no",
             }
         )
-    else:
-        try:
-            response = await provider.chat_completion(request)
-            return response
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=str(e))
+
+    try:
+        upstream = await provider.chat_completion(prepared.request)
+        upstream_text = upstream.choices[0].message.content or "" if upstream.choices else ""
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    return tools_pipeline.build_response(prepared, upstream_text)
 
 
 async def stream_chat_completion(

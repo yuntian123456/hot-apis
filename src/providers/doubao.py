@@ -76,7 +76,20 @@ class DoubaoProvider(BaseProvider):
     
     @property
     def models(self) -> List[str]:
-        return ["doubao", "doubao-pro", "doubao-lite", "doubao-1.5-pro", "doubao-1.5-lite"]
+        return [
+            "doubao",
+            "doubao-seed-2.1-pro",
+            "doubao-seed-2.1-turbo",
+            "doubao-seed-2.0-pro",
+            "doubao-pro",
+            "doubao-lite",
+            "doubao-pro-v1",
+            "doubao-lite-4k",
+            "doubao-lite-32k",
+            "doubao-1.5-pro",
+            "doubao-1.5-lite",
+            "doubao-seedream-3",
+        ]
     
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -426,6 +439,23 @@ class DoubaoProvider(BaseProvider):
                         return
     
     def get_model_mapping(self, model: str) -> str:
+        model_lower = model.lower()
+        if "seed-2.1" in model_lower or "seed-2-1" in model_lower:
+            if "turbo" in model_lower:
+                return "Doubao-Seed-2.1-turbo"
+            return "Doubao-Seed-2.1-pro"
+        if "seed-2.0" in model_lower or "seed-2-0" in model_lower:
+            return "Doubao-Seed-2-0-Pro"
+        if "seedream" in model_lower:
+            return "Doubao-Seed-2-0-Pro"
+        if "pro-v1" in model_lower or "1.5-pro" in model_lower:
+            return "Doubao-pro"
+        if "lite-4k" in model_lower or "lite-32k" in model_lower:
+            return "Doubao-lite"
+        if "lite" in model_lower:
+            return "Doubao-lite"
+        if "pro" in model_lower:
+            return "Doubao-pro"
         return "doubao"
     
     async def close(self):

@@ -1,6 +1,8 @@
 import asyncio
 import httpx
 import json
+import random
+import string
 import time
 import uuid
 import hashlib
@@ -23,6 +25,10 @@ def generate_uuid() -> str:
 
 def generate_uuid_no_dash() -> str:
     return uuid.uuid4().hex
+
+
+def generate_device_id() -> str:
+    return ''.join(random.choices(string.digits, k=8))
 
 
 def decode_jwt_payload(token: str) -> Dict:
@@ -69,6 +75,10 @@ class MiniMaxProvider(BaseProvider):
             user = payload.get("user", {})
             self._user_id = user.get("id", "")
             self._device_id = user.get("deviceID", "")
+        if not self._device_id:
+            # Web 端的 device_id 由客户端生成（8 位数字，缓存在 tab_device_id），
+            # JWT 里的 user.deviceID 通常为空；发送空值会被上游判为 401。
+            self._device_id = generate_device_id()
     
     @property
     def name(self) -> str:
@@ -79,6 +89,8 @@ class MiniMaxProvider(BaseProvider):
         return [
             "minimax",
             "minimax-auto",
+            "MiniMax-M3",
+            "MiniMax-M2.7",
             "MiniMax-M2.5",
         ]
     
@@ -86,8 +98,15 @@ class MiniMaxProvider(BaseProvider):
         model_lower = model.lower()
         if "auto" in model_lower or model_lower == "minimax":
             return {"display_name": "Auto", "model_type": 0}
-        else:
+        # model_type 为 Web 端内部枚举（M2.5=501、M2.7=502），M3 按递增规律推导，建议用真实 Token 实测确认。
+        elif "m3" in model_lower:
+            return {"display_name": "MiniMax-M3", "model_type": 503}
+        elif "m2.7" in model_lower:
+            return {"display_name": "MiniMax-M2.7", "model_type": 502}
+        elif "m2.5" in model_lower:
             return {"display_name": "MiniMax-M2.5", "model_type": 501}
+        else:
+            return {"display_name": "MiniMax-M3", "model_type": 503}
     
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
