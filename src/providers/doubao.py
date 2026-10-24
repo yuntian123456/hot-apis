@@ -39,7 +39,8 @@ def extract_image_urls_from_block(content: Any) -> List[str]:
     """在图片 block（block_type=2074）的 content 里递归找 {xxx: {url: ...}} 形态的字段。
 
     已知结构含 image_thumb / image_ori / image_ori_raw（掘金逆向文章确认），
-    优先原图 image_ori_raw；字段名猜错时由调用方的日志兜底实测。
+    同一张图的多种尺寸只保留最大原图：有 raw 取 raw，其次 ori，最后 thumb；
+    多张图（各自的 raw）全部保留。
     """
     found: List[tuple] = []
 
@@ -47,7 +48,7 @@ def extract_image_urls_from_block(content: Any) -> List[str]:
         if isinstance(o, dict):
             for k, v in o.items():
                 if isinstance(v, dict) and isinstance(v.get("url"), str) and v["url"].startswith("http"):
-                    found.append((k, v["url"]))
+                    found.append((str(k), v["url"]))
                 else:
                     walk(v)
         elif isinstance(o, list):
@@ -55,19 +56,21 @@ def extract_image_urls_from_block(content: Any) -> List[str]:
                 walk(x)
 
     walk(content)
-    pri = {"image_ori_raw": 0, "image_ori": 1, "image_thumb": 2}
-    found.sort(key=lambda kv: pri.get(kv[0], 9))
-    seen, out = set(), []
-    for _, u in found:
-        if u not in seen:
-            seen.add(u)
-            out.append(u)
-    return out
+    for group in ("raw", "ori", "thumb"):
+        picked = [u for k, u in found if group in k]
+        if picked:
+            seen, out = set(), []
+            for u in picked:
+                if u not in seen:
+                    seen.add(u)
+                    out.append(u)
+            return out
+    return []
 
 
 # 豆包响应文本里的图片字段（掘金逆向文章确认的结构）：
-# "image_ori_raw": {"url": "...", ...} 等；URL 可能带 JSON 转义斜杠
-IMAGE_URL_RE = re.compile(r'"image_(?:ori_raw|ori|thumb)[^"]*"\s*:\s*\{\s*"url"\s*:\s*"([^"]+)"')
+# 只取无水印原图 image_ori_raw（thumb/ori 是同图小图，避免重复输出）
+IMAGE_URL_RE = re.compile(r'"image_ori_raw"\s*:\s*\{\s*"url"\s*:\s*"([^"]+)"')
 
 
 @dataclass
@@ -401,6 +404,7 @@ class DoubaoProvider(BaseProvider):
             saw_content = False
             type_samples: Dict[str, str] = {}
             seen_block_types: set = set()
+            seen_delta_keys: set = set()
             status_code = response.status_code
             content_type = response.headers.get("content-type", "")
             raw_head = ""  # 响应体开头（零事件时用于判断返回的是 JSON/HTML/空）
@@ -444,6 +448,12 @@ class DoubaoProvider(BaseProvider):
                 except (TypeError, ValueError):
                     text = str(payload)
                 type_samples[event_type or "<无事件名>"] = text[:160]
+                # 未处理的事件类型打日志（如 STREAM_CHUNK/FULL_MSG_NOTIFY，可能携带
+                # 引用标注等正文内容），实测一次即可精确适配
+                if event_type and event_type not in (
+                    "SSE_ACK", "STREAM_MSG_NOTIFY", "CHUNK_DELTA", "SSE_REPLY_END",
+                ):
+                    print(f"[doubao] 未处理事件 {event_type}，样本: {text[:400]}")
 
             def _diag_chunk() -> ChatCompletionChunk:
                 samples = " ｜ ".join(
@@ -530,6 +540,14 @@ class DoubaoProvider(BaseProvider):
 
                     elif event_type == "CHUNK_DELTA":
                         if isinstance(data, dict):
+                            keys = tuple(sorted(data.keys()))
+                            if keys not in seen_delta_keys:
+                                seen_delta_keys.add(keys)
+                                try:
+                                    sample = json.dumps(data, ensure_ascii=False)[:400]
+                                except (TypeError, ValueError):
+                                    sample = str(data)[:400]
+                                print(f"[doubao] CHUNK_DELTA 键组合 {keys}，样本: {sample}")
                             text = data.get("text", "")
                             if text:
                                 saw_content = True

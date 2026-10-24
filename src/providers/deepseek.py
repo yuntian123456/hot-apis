@@ -170,7 +170,7 @@ class DeepSeekProvider(BaseProvider):
                                         if "fragments" in resp:
                                             for frag in resp["fragments"]:
                                                 if "content" in frag:
-                                                    if frag.get("type") in ("SEARCH", "SEARCH_REF"):
+                                                    if frag.get("type") in ("SEARCH", "SEARCH_REF", "THINK"):
                                                         continue
                                                     content += frag["content"]
                         except json.JSONDecodeError:
@@ -276,9 +276,9 @@ class DeepSeekProvider(BaseProvider):
                                             for frag in resp["fragments"]:
                                                 if "content" in frag:
                                                     ftype = frag.get("type")
-                                                    # 搜索状态片段（SEARCH/SEARCH_REF）不进正文，
-                                                    # 只保留思考（THINK）与回答（RESPONSE/无类型）
-                                                    if ftype in ("SEARCH", "SEARCH_REF"):
+                                                    # 思考（THINK）与搜索状态（SEARCH/SEARCH_REF）片段
+                                                    # 不进正文，只保留回答
+                                                    if ftype in ("SEARCH", "SEARCH_REF", "THINK"):
                                                         continue
                                                     content = frag["content"]
                                                     if content:
