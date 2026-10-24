@@ -72,6 +72,21 @@ cp .env.example .env      # 填入至少一个平台的 Token（获取方法见�
 python main.py            # 默认 http://localhost:8000（config.yaml 可改）
 ```
 
+#### 两种端点：完整功能（/v1）与纯净透传（/v2）
+
+| 端点 | 行为 | 适用场景 |
+|---|---|---|
+| `http://<host>:8000/v1` | 完整功能：支持 `tools` 工具调用模拟，客户端 system 提示词会压平发往上游 | agent 接入（Octop、Cline 等） |
+| `http://<host>:8000/v2` | **纯净透传**：丢弃 system 提示词、忽略 `tools`，消息不加前缀原样发往上游 | 想获得与网页版一致的纯对话体验 |
+
+`/v2` 下模型回答同样原样返回。多轮对话时历史会以「用户：/助手：」最小拼接成
+一条消息发往上游（上游会话由本服务每次新建，不拼历史则无上下文）；首轮消息
+完全原样。上游网页账号中的记录也会干净很多（无系统提示词、无工具调用标记）。
+
+```python
+client = OpenAI(base_url="http://localhost:8000/v2", api_key="not-needed")
+```
+
 ```python
 from openai import OpenAI
 

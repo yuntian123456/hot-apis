@@ -340,5 +340,47 @@ def run_server():
     )
 
 
+# ---- /v2 透传端点：纯净对话通道 ----
+
+def to_passthrough_request(request: ChatCompletionRequest) -> ChatCompletionRequest:
+    """丢弃 system、忽略 tools，把剩余消息原样发给上游。
+
+    首条 user 消息完全不加前缀；多轮时用「用户：/助手：」最小拼接——
+    因为每次请求都会在上游新建会话，不拼历史就没有上下文。
+    """
+    parts: List[str] = []
+    for m in request.messages:
+        if not m.content:
+            continue
+        if m.role == "user":
+            parts.append(m.content if not parts else f"用户：{m.content}")
+        elif m.role == "assistant":
+            parts.append(f"助手：{m.content}")
+        elif m.role == "tool":
+            parts.append(f"工具结果：{m.content}")
+        # system 一律丢弃：透传通道不携带客户端注入的任何提示词
+    if not parts:
+        raise HTTPException(status_code=400, detail="v2 透传通道没有可发送的消息内容")
+
+    return request.model_copy(update={
+        "messages": [ChatMessage(role="user", content="\n\n".join(parts))],
+        "tools": None,
+        "tool_choice": None,
+    })
+
+
+@app.post("/v2/chat/completions")
+async def chat_completions_passthrough(
+    request: ChatCompletionRequest,
+    authorization: Optional[str] = Header(None)
+):
+    return await chat_completions(to_passthrough_request(request), authorization)
+
+
+@app.get("/v2/models", response_model=ModelList)
+async def list_models_passthrough():
+    return await list_models()
+
+
 if __name__ == "__main__":
     run_server()

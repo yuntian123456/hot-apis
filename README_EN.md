@@ -81,6 +81,22 @@ cp .env.example .env      # fill in at least one platform token (see table below
 python main.py            # http://localhost:8000 by default (see config.yaml)
 ```
 
+#### Two endpoints: full-featured (/v1) vs. clean passthrough (/v2)
+
+| Endpoint | Behavior | Use case |
+|---|---|---|
+| `http://<host>:8000/v1` | Full features: `tools` calling simulation; client system prompts are flattened and sent upstream | agent integrations (Octop, Cline, etc.) |
+| `http://<host>:8000/v2` | **Clean passthrough**: drops system prompts, ignores `tools`, sends messages upstream verbatim | plain chat that feels like the official web UI |
+
+On `/v2` model replies come back verbatim too. For multi-turn conversations the history
+is minimally joined with `用户：/助手：` markers into one message (each request creates a
+new upstream session, so history must be inlined); the first turn is sent exactly as-is.
+The upstream web account stays much cleaner (no system prompts, no tool-call markup).
+
+```python
+client = OpenAI(base_url="http://localhost:8000/v2", api_key="not-needed")
+```
+
 ```python
 from openai import OpenAI
 
