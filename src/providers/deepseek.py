@@ -154,7 +154,21 @@ class DeepSeekProvider(BaseProvider):
             response.raise_for_status()
 
             content = ""
-            channel = "content"  # 通道逻辑与流式一致：思考/搜索片段过滤
+            state = {"channel": "content"}  # 通道逻辑与流式一致：思考/搜索片段过滤
+
+            def _frag_text(frag: Any) -> str:
+                if not isinstance(frag, dict):
+                    return ""
+                ftype = frag.get("type")
+                if ftype in ("THINK", "SEARCH", "SEARCH_REF"):
+                    state["channel"] = "reasoning"
+                    return ""
+                if ftype == "RESPONSE":
+                    state["channel"] = "content"
+                if state["channel"] != "content":
+                    return ""
+                return frag.get("content") or ""
+
             async for line in response.aiter_lines():
                 if line.startswith("data: "):
                     data_str = line[6:]
@@ -164,22 +178,19 @@ class DeepSeekProvider(BaseProvider):
                             if "v" in data:
                                 v = data["v"]
                                 if isinstance(v, str):
-                                    if channel == "content":
+                                    if state["channel"] == "content":
                                         content += v
-                                elif isinstance(v, dict):
-                                    if "response" in v:
-                                        resp = v["response"]
-                                        if "fragments" in resp:
-                                            for frag in resp["fragments"]:
-                                                ftype = frag.get("type")
-                                                if ftype in ("THINK", "SEARCH", "SEARCH_REF"):
-                                                    channel = "reasoning"
-                                                    continue
-                                                if ftype == "RESPONSE":
-                                                    channel = "content"
-                                                frag_content = frag.get("content")
-                                                if frag_content and channel == "content":
-                                                    content += frag_content
+                                else:
+                                    frag_lists = []
+                                    if isinstance(v, dict) and isinstance(v.get("response"), dict):
+                                        frag_lists.append(v["response"].get("fragments") or [])
+                                    elif isinstance(v, dict) and "type" in v:
+                                        frag_lists.append([v])
+                                    elif isinstance(v, list):
+                                        frag_lists.append(v)
+                                    for frags in frag_lists:
+                                        for frag in frags:
+                                            content += _frag_text(frag)
                         except json.JSONDecodeError:
                             continue
         
@@ -242,8 +253,24 @@ class DeepSeekProvider(BaseProvider):
             current_event = ""
             # 内容通道：思考正文以裸 str v 增量传输（kittors updates 解析确认），
             # 通道由 THINK/SEARCH 片段切到 reasoning（过滤），RESPONSE 片段切回 content。
+            # 片段有多种到达形态：dict v 的 response.fragments 数组、
+            # p=response/fragments+APPEND 的数组 v、单 fragment dict v。
             # 初始为 content，保证无片段标记的 flash 模型纯 str 流不受影响。
-            channel = "content"
+            state = {"channel": "content"}
+
+            def _handle_fragment(frag: Any) -> Optional[str]:
+                """处理单个片段：更新通道，返回应输出的正文（或 None）。"""
+                if not isinstance(frag, dict):
+                    return None
+                ftype = frag.get("type")
+                if ftype in ("THINK", "SEARCH", "SEARCH_REF"):
+                    state["channel"] = "reasoning"
+                    return None
+                if ftype == "RESPONSE":
+                    state["channel"] = "content"
+                if state["channel"] != "content":
+                    return None
+                return frag.get("content")
 
             async for line in response.aiter_lines():
                 if line.startswith("event: "):
@@ -268,7 +295,7 @@ class DeepSeekProvider(BaseProvider):
                                 if isinstance(v, str):
                                     if v == "FINISHED":
                                         continue
-                                    if channel != "content":
+                                    if state["channel"] != "content":
                                         continue
                                     yield ChatCompletionChunk(
                                         id=chunk_id,
@@ -282,31 +309,31 @@ class DeepSeekProvider(BaseProvider):
                                             )
                                         ]
                                     )
-                                elif isinstance(v, dict):
-                                    if "response" in v:
-                                        resp = v["response"]
-                                        if "fragments" in resp:
-                                            for frag in resp["fragments"]:
-                                                ftype = frag.get("type")
-                                                if ftype in ("THINK", "SEARCH", "SEARCH_REF"):
-                                                    channel = "reasoning"
-                                                    continue
-                                                if ftype == "RESPONSE":
-                                                    channel = "content"
-                                                content = frag.get("content")
-                                                if content and channel == "content":
-                                                    yield ChatCompletionChunk(
-                                                        id=chunk_id,
-                                                        model=request.model,
-                                                        created=created,
-                                                        choices=[
-                                                            StreamChoice(
-                                                                index=0,
-                                                                delta=DeltaMessage(content=content),
-                                                                finish_reason=None
-                                                            )
-                                                        ]
-                                                    )
+                                else:
+                                    # 片段的三种到达形态
+                                    frag_lists = []
+                                    if isinstance(v, dict) and isinstance(v.get("response"), dict):
+                                        frag_lists.append(v["response"].get("fragments") or [])
+                                    elif isinstance(v, dict) and "type" in v:
+                                        frag_lists.append([v])
+                                    elif isinstance(v, list):
+                                        frag_lists.append(v)
+                                    for frags in frag_lists:
+                                        for frag in frags:
+                                            c = _handle_fragment(frag)
+                                            if c:
+                                                yield ChatCompletionChunk(
+                                                    id=chunk_id,
+                                                    model=request.model,
+                                                    created=created,
+                                                    choices=[
+                                                        StreamChoice(
+                                                            index=0,
+                                                            delta=DeltaMessage(content=c),
+                                                            finish_reason=None
+                                                        )
+                                                    ]
+                                                )
                         except json.JSONDecodeError:
                             continue
 

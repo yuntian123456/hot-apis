@@ -471,11 +471,12 @@ class DoubaoProvider(BaseProvider):
                 except (TypeError, ValueError):
                     text = str(payload)
                 type_samples[event_type or "<无事件名>"] = text[:160]
-                # 未处理的事件类型打日志并留存样本（可能携带正文内容），流结束时回传对话便于定位。
-                # 已知无需处理：SSE_HEARTBEAT=心跳，FULL_MSG_NOTIFY=完整消息快照（与增量重复）
+                # 未处理的事件类型打日志（可能携带正文内容）。已知无需处理：
+                # SSE_HEARTBEAT=心跳；FULL_MSG_NOTIFY=完整快照（与增量重复）；
+                # DOWNLINK_CMD=下行控制命令（如中断通知，非内容）
                 if event_type and event_type not in (
                     "SSE_ACK", "STREAM_MSG_NOTIFY", "CHUNK_DELTA", "SSE_REPLY_END",
-                    "STREAM_CHUNK", "SSE_HEARTBEAT", "FULL_MSG_NOTIFY",
+                    "STREAM_CHUNK", "SSE_HEARTBEAT", "FULL_MSG_NOTIFY", "DOWNLINK_CMD",
                 ):
                     unknown_event_samples[event_type] = text[:200]
                     print(f"[doubao] 未处理事件 {event_type}，样本: {text[:400]}")
@@ -504,17 +505,6 @@ class DoubaoProvider(BaseProvider):
                         )
                     ]
                 )
-
-            def _struct_diag_text() -> str:
-                """未处理结构样本（引用词/分段信息可能藏在这些结构里）。"""
-                parts = []
-                if unknown_event_samples:
-                    parts.append("未处理事件：" + " ｜ ".join(
-                        f"{k}: {v[:130]}" for k, v in list(unknown_event_samples.items())[:3]))
-                if delta_key_samples:
-                    parts.append("delta键变体：" + " ｜ ".join(
-                        v[:130] for v in list(delta_key_samples.values())[:3]))
-                return " ｜ ".join(parts)
 
             async for chunk in response.aiter_text():
                 full_parts.append(chunk)
@@ -640,20 +630,6 @@ class DoubaoProvider(BaseProvider):
                             )
                         if not saw_content:
                             yield _diag_chunk()
-                        sd = _struct_diag_text()
-                        if sd:
-                            yield ChatCompletionChunk(
-                                id=chunk_id,
-                                model=request.model,
-                                created=created,
-                                choices=[
-                                    StreamChoice(
-                                        index=0,
-                                        delta=DeltaMessage(content="\n\n---\n[豆包调试] 检测到未解析结构（可能含引用词/分段信息）：" + sd),
-                                        finish_reason=None
-                                    )
-                                ]
-                            )
                         yield ChatCompletionChunk(
                             id=chunk_id,
                             model=request.model,
@@ -679,21 +655,6 @@ class DoubaoProvider(BaseProvider):
                         StreamChoice(
                             index=0,
                             delta=DeltaMessage(content="\n" + "\n".join(f"![图片]({u})" for u in extra[:5])),
-                            finish_reason=None
-                        )
-                    ]
-                )
-            sd = _struct_diag_text()
-            if sd:
-                saw_content = True
-                yield ChatCompletionChunk(
-                    id=chunk_id,
-                    model=request.model,
-                    created=created,
-                    choices=[
-                        StreamChoice(
-                            index=0,
-                            delta=DeltaMessage(content="\n\n---\n[豆包调试] 检测到未解析结构（可能含引用词/分段信息）：" + sd),
                             finish_reason=None
                         )
                     ]
