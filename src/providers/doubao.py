@@ -405,6 +405,8 @@ class DoubaoProvider(BaseProvider):
             type_samples: Dict[str, str] = {}
             seen_block_types: set = set()
             seen_delta_keys: set = set()
+            unknown_event_samples: Dict[str, str] = {}   # 未处理事件样本（回传对话定位）
+            delta_key_samples: Dict[tuple, str] = {}     # 非 text 键组合的 delta 样本
             status_code = response.status_code
             content_type = response.headers.get("content-type", "")
             raw_head = ""  # 响应体开头（零事件时用于判断返回的是 JSON/HTML/空）
@@ -427,6 +429,27 @@ class DoubaoProvider(BaseProvider):
                 tb = block.get("content", {}).get("text_block", {})
                 return tb.get("text", "")
 
+            # 块状态机：block_id -> 已输出文本长度。同一块经 STREAM_MSG_NOTIFY /
+            # STREAM_CHUNK patch 多次到达时只输出新增部分，避免快照重复
+            block_progress: Dict[str, int] = {}
+
+            def _emit_blocks(content_blocks: List[Dict[str, Any]]) -> List[str]:
+                segs = []
+                for block in content_blocks:
+                    if not isinstance(block, dict):
+                        continue
+                    _note_block(block)
+                    bid = str(block.get("block_id", id(block)))
+                    text = _text_from_block(block)
+                    if not text:
+                        continue
+                    prev_len = block_progress.get(bid, 0)
+                    if len(text) > prev_len:
+                        segs.append(text[prev_len:])
+                        block_progress[bid] = len(text)
+                    # 变短视为替换/重置语义，保守忽略防重复
+                return segs
+
             def _flush_images() -> List[str]:
                 """流结束时从原始响应文本兜底扫描图片 URL（block 结构未命中时生效）。"""
                 new_urls = []
@@ -448,11 +471,13 @@ class DoubaoProvider(BaseProvider):
                 except (TypeError, ValueError):
                     text = str(payload)
                 type_samples[event_type or "<无事件名>"] = text[:160]
-                # 未处理的事件类型打日志（如 STREAM_CHUNK/FULL_MSG_NOTIFY，可能携带
-                # 引用标注等正文内容），实测一次即可精确适配
+                # 未处理的事件类型打日志并留存样本（可能携带正文内容），流结束时回传对话便于定位。
+                # 已知无需处理：SSE_HEARTBEAT=心跳，FULL_MSG_NOTIFY=完整消息快照（与增量重复）
                 if event_type and event_type not in (
                     "SSE_ACK", "STREAM_MSG_NOTIFY", "CHUNK_DELTA", "SSE_REPLY_END",
+                    "STREAM_CHUNK", "SSE_HEARTBEAT", "FULL_MSG_NOTIFY",
                 ):
+                    unknown_event_samples[event_type] = text[:200]
                     print(f"[doubao] 未处理事件 {event_type}，样本: {text[:400]}")
 
             def _diag_chunk() -> ChatCompletionChunk:
@@ -479,6 +504,17 @@ class DoubaoProvider(BaseProvider):
                         )
                     ]
                 )
+
+            def _struct_diag_text() -> str:
+                """未处理结构样本（引用词/分段信息可能藏在这些结构里）。"""
+                parts = []
+                if unknown_event_samples:
+                    parts.append("未处理事件：" + " ｜ ".join(
+                        f"{k}: {v[:130]}" for k, v in list(unknown_event_samples.items())[:3]))
+                if delta_key_samples:
+                    parts.append("delta键变体：" + " ｜ ".join(
+                        v[:130] for v in list(delta_key_samples.values())[:3]))
+                return " ｜ ".join(parts)
 
             async for chunk in response.aiter_text():
                 full_parts.append(chunk)
@@ -519,24 +555,44 @@ class DoubaoProvider(BaseProvider):
                     elif event_type == "STREAM_MSG_NOTIFY":
                         if isinstance(data, dict):
                             content = data.get("content", {})
-                            content_blocks = content.get("content_block", [])
-                            for block in content_blocks:
-                                _note_block(block)
-                                text = _text_from_block(block)
-                                if text:
-                                    saw_content = True
-                                    yield ChatCompletionChunk(
-                                        id=chunk_id,
-                                        model=request.model,
-                                        created=created,
-                                        choices=[
-                                            StreamChoice(
-                                                index=0,
-                                                delta=DeltaMessage(content=text),
-                                                finish_reason=None
-                                            )
-                                        ]
-                                    )
+                            for seg in _emit_blocks(content.get("content_block", [])):
+                                saw_content = True
+                                yield ChatCompletionChunk(
+                                    id=chunk_id,
+                                    model=request.model,
+                                    created=created,
+                                    choices=[
+                                        StreamChoice(
+                                            index=0,
+                                            delta=DeltaMessage(content=seg),
+                                            finish_reason=None
+                                        )
+                                    ]
+                                )
+
+                    elif event_type == "STREAM_CHUNK":
+                        # patch 操作数组：patch_value.content_block 携带块更新
+                        #（带引用词的正文块经此下发），与 NOTIFY 共用块状态机
+                        if isinstance(data, dict):
+                            for op in data.get("patch_op", []) or []:
+                                if not isinstance(op, dict):
+                                    continue
+                                pv = op.get("patch_value")
+                                if isinstance(pv, dict):
+                                    for seg in _emit_blocks(pv.get("content_block", [])):
+                                        saw_content = True
+                                        yield ChatCompletionChunk(
+                                            id=chunk_id,
+                                            model=request.model,
+                                            created=created,
+                                            choices=[
+                                                StreamChoice(
+                                                    index=0,
+                                                    delta=DeltaMessage(content=seg),
+                                                    finish_reason=None
+                                                )
+                                            ]
+                                        )
 
                     elif event_type == "CHUNK_DELTA":
                         if isinstance(data, dict):
@@ -548,6 +604,8 @@ class DoubaoProvider(BaseProvider):
                                 except (TypeError, ValueError):
                                     sample = str(data)[:400]
                                 print(f"[doubao] CHUNK_DELTA 键组合 {keys}，样本: {sample}")
+                                if keys != ("text",):
+                                    delta_key_samples[keys] = sample[:200]
                             text = data.get("text", "")
                             if text:
                                 saw_content = True
@@ -582,6 +640,20 @@ class DoubaoProvider(BaseProvider):
                             )
                         if not saw_content:
                             yield _diag_chunk()
+                        sd = _struct_diag_text()
+                        if sd:
+                            yield ChatCompletionChunk(
+                                id=chunk_id,
+                                model=request.model,
+                                created=created,
+                                choices=[
+                                    StreamChoice(
+                                        index=0,
+                                        delta=DeltaMessage(content="\n\n---\n[豆包调试] 检测到未解析结构（可能含引用词/分段信息）：" + sd),
+                                        finish_reason=None
+                                    )
+                                ]
+                            )
                         yield ChatCompletionChunk(
                             id=chunk_id,
                             model=request.model,
@@ -607,6 +679,21 @@ class DoubaoProvider(BaseProvider):
                         StreamChoice(
                             index=0,
                             delta=DeltaMessage(content="\n" + "\n".join(f"![图片]({u})" for u in extra[:5])),
+                            finish_reason=None
+                        )
+                    ]
+                )
+            sd = _struct_diag_text()
+            if sd:
+                saw_content = True
+                yield ChatCompletionChunk(
+                    id=chunk_id,
+                    model=request.model,
+                    created=created,
+                    choices=[
+                        StreamChoice(
+                            index=0,
+                            delta=DeltaMessage(content="\n\n---\n[豆包调试] 检测到未解析结构（可能含引用词/分段信息）：" + sd),
                             finish_reason=None
                         )
                     ]

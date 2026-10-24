@@ -154,6 +154,7 @@ class DeepSeekProvider(BaseProvider):
             response.raise_for_status()
 
             content = ""
+            channel = "content"  # 通道逻辑与流式一致：思考/搜索片段过滤
             async for line in response.aiter_lines():
                 if line.startswith("data: "):
                     data_str = line[6:]
@@ -163,16 +164,22 @@ class DeepSeekProvider(BaseProvider):
                             if "v" in data:
                                 v = data["v"]
                                 if isinstance(v, str):
-                                    content += v
+                                    if channel == "content":
+                                        content += v
                                 elif isinstance(v, dict):
                                     if "response" in v:
                                         resp = v["response"]
                                         if "fragments" in resp:
                                             for frag in resp["fragments"]:
-                                                if "content" in frag:
-                                                    if frag.get("type") in ("SEARCH", "SEARCH_REF", "THINK"):
-                                                        continue
-                                                    content += frag["content"]
+                                                ftype = frag.get("type")
+                                                if ftype in ("THINK", "SEARCH", "SEARCH_REF"):
+                                                    channel = "reasoning"
+                                                    continue
+                                                if ftype == "RESPONSE":
+                                                    channel = "content"
+                                                frag_content = frag.get("content")
+                                                if frag_content and channel == "content":
+                                                    content += frag_content
                         except json.JSONDecodeError:
                             continue
         
@@ -233,6 +240,10 @@ class DeepSeekProvider(BaseProvider):
             chunk_id = f"{session_id}@1"
             created = int(time.time())
             current_event = ""
+            # 内容通道：思考正文以裸 str v 增量传输（kittors updates 解析确认），
+            # 通道由 THINK/SEARCH 片段切到 reasoning（过滤），RESPONSE 片段切回 content。
+            # 初始为 content，保证无片段标记的 flash 模型纯 str 流不受影响。
+            channel = "content"
 
             async for line in response.aiter_lines():
                 if line.startswith("event: "):
@@ -257,6 +268,8 @@ class DeepSeekProvider(BaseProvider):
                                 if isinstance(v, str):
                                     if v == "FINISHED":
                                         continue
+                                    if channel != "content":
+                                        continue
                                     yield ChatCompletionChunk(
                                         id=chunk_id,
                                         model=request.model,
@@ -274,26 +287,26 @@ class DeepSeekProvider(BaseProvider):
                                         resp = v["response"]
                                         if "fragments" in resp:
                                             for frag in resp["fragments"]:
-                                                if "content" in frag:
-                                                    ftype = frag.get("type")
-                                                    # 思考（THINK）与搜索状态（SEARCH/SEARCH_REF）片段
-                                                    # 不进正文，只保留回答
-                                                    if ftype in ("SEARCH", "SEARCH_REF", "THINK"):
-                                                        continue
-                                                    content = frag["content"]
-                                                    if content:
-                                                        yield ChatCompletionChunk(
-                                                            id=chunk_id,
-                                                            model=request.model,
-                                                            created=created,
-                                                            choices=[
-                                                                StreamChoice(
-                                                                    index=0,
-                                                                    delta=DeltaMessage(content=content),
-                                                                    finish_reason=None
-                                                                )
-                                                            ]
-                                                        )
+                                                ftype = frag.get("type")
+                                                if ftype in ("THINK", "SEARCH", "SEARCH_REF"):
+                                                    channel = "reasoning"
+                                                    continue
+                                                if ftype == "RESPONSE":
+                                                    channel = "content"
+                                                content = frag.get("content")
+                                                if content and channel == "content":
+                                                    yield ChatCompletionChunk(
+                                                        id=chunk_id,
+                                                        model=request.model,
+                                                        created=created,
+                                                        choices=[
+                                                            StreamChoice(
+                                                                index=0,
+                                                                delta=DeltaMessage(content=content),
+                                                                finish_reason=None
+                                                            )
+                                                        ]
+                                                    )
                         except json.JSONDecodeError:
                             continue
 
