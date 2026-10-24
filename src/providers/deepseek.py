@@ -218,7 +218,10 @@ class DeepSeekProvider(BaseProvider):
             headers=headers,
             json=payload
         ) as response:
-            response.raise_for_status()
+            if response.status_code >= 400:
+                # 读出上游错误响应体，具体到哪个字段不合法（如 parent_message_id 类型）
+                body = (await response.aread()).decode("utf-8", "replace")[:500]
+                raise RuntimeError(f"DeepSeek HTTP {response.status_code}: {body}")
 
             chunk_id = f"{session_id}@1"
             created = int(time.time())
@@ -237,9 +240,10 @@ class DeepSeekProvider(BaseProvider):
                             if track_message_id and current_event == "ready":
                                 # 会话链：response_message_id 在 ready 事件的 data 顶层
                                 #（结构参考 kittors/deepseek-web-api 的 updates 解析）
+                                # 保持原始类型（int/str 均原样传递，不做转换）
                                 rid = data.get("response_message_id")
                                 if rid:
-                                    self._last_assistant_msg_id = str(rid)
+                                    self._last_assistant_msg_id = rid
 
                             if "v" in data:
                                 v = data["v"]
@@ -313,7 +317,8 @@ class DeepSeekProvider(BaseProvider):
                     yield chunk
                 if self._last_assistant_msg_id:
                     if self._last_assistant_msg_id != self._pt_parent_id:
-                        print(f"[deepseek-pt] 已提取 assistant 消息 id，会话链就绪: {self._last_assistant_msg_id}")
+                        print(f"[deepseek-pt] 已提取 assistant 消息 id: {self._last_assistant_msg_id!r} "
+                              f"(type={type(self._last_assistant_msg_id).__name__})，会话链就绪")
                     self._pt_parent_id = self._last_assistant_msg_id
                 else:
                     print("[deepseek-pt] 警告：本次流未提取到 assistant 消息 id，下一轮上下文可能断裂")
