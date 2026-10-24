@@ -35,6 +35,36 @@ def generate_unique_key() -> str:
     return str(uuid.uuid4())
 
 
+def extract_image_urls_from_block(content: Any) -> List[str]:
+    """在图片 block（block_type=2074）的 content 里递归找 {xxx: {url: ...}} 形态的字段。
+
+    已知结构含 image_thumb / image_ori / image_ori_raw（掘金逆向文章确认），
+    优先原图 image_ori_raw；字段名猜错时由调用方的日志兜底实测。
+    """
+    found: List[tuple] = []
+
+    def walk(o):
+        if isinstance(o, dict):
+            for k, v in o.items():
+                if isinstance(v, dict) and isinstance(v.get("url"), str) and v["url"].startswith("http"):
+                    found.append((k, v["url"]))
+                else:
+                    walk(v)
+        elif isinstance(o, list):
+            for x in o:
+                walk(x)
+
+    walk(content)
+    pri = {"image_ori_raw": 0, "image_ori": 1, "image_thumb": 2}
+    found.sort(key=lambda kv: pri.get(kv[0], 9))
+    seen, out = set(), []
+    for _, u in found:
+        if u not in seen:
+            seen.add(u)
+            out.append(u)
+    return out
+
+
 @dataclass
 class DoubaoChatSession:
     conversation_id: str = ""
@@ -363,9 +393,27 @@ class DoubaoProvider(BaseProvider):
             # 记录各事件类型的首个载荷样本，零内容时回传给客户端定位
             saw_content = False
             type_samples: Dict[str, str] = {}
+            seen_block_types: set = set()
             status_code = response.status_code
             content_type = response.headers.get("content-type", "")
             raw_head = ""  # 响应体开头（零事件时用于判断返回的是 JSON/HTML/空）
+
+            def _note_block(block: Dict[str, Any]) -> None:
+                bt = block.get("block_type")
+                if bt not in (10000, 2074) and bt not in seen_block_types:
+                    seen_block_types.add(bt)
+                    try:
+                        sample = json.dumps(block, ensure_ascii=False)[:300]
+                    except (TypeError, ValueError):
+                        sample = str(block)[:300]
+                    print(f"[doubao] 未处理的 block_type={bt}，样本: {sample}")
+
+            def _text_from_block(block: Dict[str, Any]) -> str:
+                if block.get("block_type") == 2074:
+                    urls = extract_image_urls_from_block(block.get("content", {}))
+                    return "\n".join(f"![图片]({u})" for u in urls[:3])
+                tb = block.get("content", {}).get("text_block", {})
+                return tb.get("text", "")
 
             def _sample(event_type: str, payload: Any) -> None:
                 if event_type in type_samples:
@@ -441,23 +489,22 @@ class DoubaoProvider(BaseProvider):
                             content = data.get("content", {})
                             content_blocks = content.get("content_block", [])
                             for block in content_blocks:
-                                if block.get("block_type") == 10000:
-                                    text_block = block.get("content", {}).get("text_block", {})
-                                    text = text_block.get("text", "")
-                                    if text:
-                                        saw_content = True
-                                        yield ChatCompletionChunk(
-                                            id=chunk_id,
-                                            model=request.model,
-                                            created=created,
-                                            choices=[
-                                                StreamChoice(
-                                                    index=0,
-                                                    delta=DeltaMessage(content=text),
-                                                    finish_reason=None
-                                                )
-                                            ]
-                                        )
+                                _note_block(block)
+                                text = _text_from_block(block)
+                                if text:
+                                    saw_content = True
+                                    yield ChatCompletionChunk(
+                                        id=chunk_id,
+                                        model=request.model,
+                                        created=created,
+                                        choices=[
+                                            StreamChoice(
+                                                index=0,
+                                                delta=DeltaMessage(content=text),
+                                                finish_reason=None
+                                            )
+                                        ]
+                                    )
 
                     elif event_type == "CHUNK_DELTA":
                         if isinstance(data, dict):

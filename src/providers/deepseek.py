@@ -222,13 +222,24 @@ class DeepSeekProvider(BaseProvider):
 
             chunk_id = f"{session_id}@1"
             created = int(time.time())
+            current_event = ""
 
             async for line in response.aiter_lines():
+                if line.startswith("event: "):
+                    current_event = line[7:].strip()
+                    continue
                 if line.startswith("data: "):
                     data_str = line[6:]
                     if data_str.strip() and data_str != "[DONE]":
                         try:
                             data = json.loads(data_str)
+
+                            if track_message_id and current_event == "ready":
+                                # 会话链：response_message_id 在 ready 事件的 data 顶层
+                                #（结构参考 kittors/deepseek-web-api 的 updates 解析）
+                                rid = data.get("response_message_id")
+                                if rid:
+                                    self._last_assistant_msg_id = str(rid)
 
                             if "v" in data:
                                 v = data["v"]
@@ -248,13 +259,6 @@ class DeepSeekProvider(BaseProvider):
                                         ]
                                     )
                                 elif isinstance(v, dict):
-                                    if track_message_id:
-                                        # 会话链：从 dict 形态帧中提取 assistant 消息 id
-                                        # （字段名按多位置探测，实测日志可确认命中位置）
-                                        resp = v.get("response") if isinstance(v.get("response"), dict) else {}
-                                        mid = v.get("message_id") or resp.get("message_id")
-                                        if mid:
-                                            self._last_assistant_msg_id = str(mid)
                                     if "response" in v:
                                         resp = v["response"]
                                         if "fragments" in resp:
@@ -294,24 +298,29 @@ class DeepSeekProvider(BaseProvider):
         """/v2 透传会话流：复用同一上游会话，parent_message_id 串联多轮，
         每轮只发增量消息（历史由上游会话维护）。单会话非并发安全，串行化。"""
         async with self._pt_lock:
-            client = await self._get_client()
-            if self._pt_session_id is None:
-                self._pt_session_id = await self._create_session(client)
-                print(f"[deepseek-pt] 透传会话已创建: {self._pt_session_id}")
-            self._last_assistant_msg_id = None
-            async for chunk in self.chat_completion_stream(
-                request,
-                session_id=self._pt_session_id,
-                parent_message_id=self._pt_parent_id,
-                track_message_id=True,
-            ):
-                yield chunk
-            if self._last_assistant_msg_id:
-                if self._last_assistant_msg_id != self._pt_parent_id:
-                    print(f"[deepseek-pt] 已提取 assistant 消息 id，会话链就绪: {self._last_assistant_msg_id}")
-                self._pt_parent_id = self._last_assistant_msg_id
-            else:
-                print("[deepseek-pt] 警告：本次流未提取到 assistant 消息 id，下一轮上下文可能断裂")
+            try:
+                client = await self._get_client()
+                if self._pt_session_id is None:
+                    self._pt_session_id = await self._create_session(client)
+                    print(f"[deepseek-pt] 透传会话已创建: {self._pt_session_id}")
+                self._last_assistant_msg_id = None
+                async for chunk in self.chat_completion_stream(
+                    request,
+                    session_id=self._pt_session_id,
+                    parent_message_id=self._pt_parent_id,
+                    track_message_id=True,
+                ):
+                    yield chunk
+                if self._last_assistant_msg_id:
+                    if self._last_assistant_msg_id != self._pt_parent_id:
+                        print(f"[deepseek-pt] 已提取 assistant 消息 id，会话链就绪: {self._last_assistant_msg_id}")
+                    self._pt_parent_id = self._last_assistant_msg_id
+                else:
+                    print("[deepseek-pt] 警告：本次流未提取到 assistant 消息 id，下一轮上下文可能断裂")
+            except BaseException:
+                # 流失败后会话状态可能已不一致（如 parent id 被上游 422 拒绝），重置自愈
+                self.reset_pt()
+                raise
 
     def reset_pt(self):
         self._pt_session_id = None
