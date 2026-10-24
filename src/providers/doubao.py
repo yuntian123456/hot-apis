@@ -65,6 +65,11 @@ def extract_image_urls_from_block(content: Any) -> List[str]:
     return out
 
 
+# 豆包响应文本里的图片字段（掘金逆向文章确认的结构）：
+# "image_ori_raw": {"url": "...", ...} 等；URL 可能带 JSON 转义斜杠
+IMAGE_URL_RE = re.compile(r'"image_(?:ori_raw|ori|thumb)[^"]*"\s*:\s*\{\s*"url"\s*:\s*"([^"]+)"')
+
+
 @dataclass
 class DoubaoChatSession:
     conversation_id: str = ""
@@ -389,6 +394,8 @@ class DoubaoProvider(BaseProvider):
             response.raise_for_status()
 
             buffer = ""
+            full_parts: List[str] = []   # 原始响应文本（流结束时兜底扫描图片 URL）
+            emitted_urls: set = set()    # 已输出的图片 URL（block 路径与兜底扫描去重）
             # 空流诊断：豆包解析器只认 4 种事件，上游改结构/返回错误时会被静默忽略，
             # 记录各事件类型的首个载荷样本，零内容时回传给客户端定位
             saw_content = False
@@ -411,9 +418,23 @@ class DoubaoProvider(BaseProvider):
             def _text_from_block(block: Dict[str, Any]) -> str:
                 if block.get("block_type") == 2074:
                     urls = extract_image_urls_from_block(block.get("content", {}))
+                    emitted_urls.update(urls[:3])
                     return "\n".join(f"![图片]({u})" for u in urls[:3])
                 tb = block.get("content", {}).get("text_block", {})
                 return tb.get("text", "")
+
+            def _flush_images() -> List[str]:
+                """流结束时从原始响应文本兜底扫描图片 URL（block 结构未命中时生效）。"""
+                new_urls = []
+                for m in IMAGE_URL_RE.finditer("".join(full_parts)):
+                    u = m.group(1).replace("\\/", "/")
+                    if u not in emitted_urls:
+                        emitted_urls.add(u)
+                        new_urls.append(u)
+                if new_urls:
+                    print(f"[doubao] block 结构未命中图片，已从原始流文本兜底提取 {len(new_urls)} 个 URL"
+                          f"（首个: {new_urls[0][:120]}）")
+                return new_urls
 
             def _sample(event_type: str, payload: Any) -> None:
                 if event_type in type_samples:
@@ -450,6 +471,7 @@ class DoubaoProvider(BaseProvider):
                 )
 
             async for chunk in response.aiter_text():
+                full_parts.append(chunk)
                 if len(raw_head) < 300:
                     raw_head = (raw_head + chunk)[:300]
                 buffer += chunk
@@ -525,6 +547,21 @@ class DoubaoProvider(BaseProvider):
                                 )
 
                     elif event_type == "SSE_REPLY_END":
+                        extra = _flush_images()
+                        if extra:
+                            saw_content = True
+                            yield ChatCompletionChunk(
+                                id=chunk_id,
+                                model=request.model,
+                                created=created,
+                                choices=[
+                                    StreamChoice(
+                                        index=0,
+                                        delta=DeltaMessage(content="\n" + "\n".join(f"![图片]({u})" for u in extra[:5])),
+                                        finish_reason=None
+                                    )
+                                ]
+                            )
                         if not saw_content:
                             yield _diag_chunk()
                         yield ChatCompletionChunk(
@@ -541,6 +578,21 @@ class DoubaoProvider(BaseProvider):
                         )
                         return
 
+            extra = _flush_images()
+            if extra:
+                saw_content = True
+                yield ChatCompletionChunk(
+                    id=chunk_id,
+                    model=request.model,
+                    created=created,
+                    choices=[
+                        StreamChoice(
+                            index=0,
+                            delta=DeltaMessage(content="\n" + "\n".join(f"![图片]({u})" for u in extra[:5])),
+                            finish_reason=None
+                        )
+                    ]
+                )
         if not saw_content:
             yield _diag_chunk()
     
