@@ -55,6 +55,10 @@ class DeepSeekProvider(BaseProvider):
             "deepseek-v4-pro",
             "deepseek",
             "deepseek-r1",
+            # 智能搜索变体：任意模型名加 -search 后缀即开启联网搜索
+            # （如 deepseek-flash-search；与思考组合：deepseek-reasoner-search）
+            "deepseek-flash-search",
+            "deepseek-reasoner-search",
         ]
     
     async def _get_client(self) -> httpx.AsyncClient:
@@ -137,10 +141,10 @@ class DeepSeekProvider(BaseProvider):
             "prompt": prompt,
             "ref_file_ids": [],
             "thinking_enabled": model_type == "reasoner",
-            "search_enabled": False,
+            "search_enabled": "search" in request.model.lower(),
             "preempt": False
         }
-        
+
         async with client.stream(
             "POST",
             f"{self.base_url}/api/v0/chat/completion",
@@ -148,7 +152,7 @@ class DeepSeekProvider(BaseProvider):
             json=payload
         ) as response:
             response.raise_for_status()
-            
+
             content = ""
             async for line in response.aiter_lines():
                 if line.startswith("data: "):
@@ -166,7 +170,9 @@ class DeepSeekProvider(BaseProvider):
                                         if "fragments" in resp:
                                             for frag in resp["fragments"]:
                                                 if "content" in frag:
-                                                    content = frag["content"]
+                                                    if frag.get("type") in ("SEARCH", "SEARCH_REF"):
+                                                        continue
+                                                    content += frag["content"]
                         except json.JSONDecodeError:
                             continue
         
@@ -208,7 +214,8 @@ class DeepSeekProvider(BaseProvider):
             "prompt": prompt,
             "ref_file_ids": [],
             "thinking_enabled": model_type == "reasoner",
-            "search_enabled": False,
+            # 联网搜索：模型名含 search 时开启（如 deepseek-flash-search）
+            "search_enabled": "search" in request.model.lower(),
             "preempt": False
         }
 
@@ -268,6 +275,11 @@ class DeepSeekProvider(BaseProvider):
                                         if "fragments" in resp:
                                             for frag in resp["fragments"]:
                                                 if "content" in frag:
+                                                    ftype = frag.get("type")
+                                                    # 搜索状态片段（SEARCH/SEARCH_REF）不进正文，
+                                                    # 只保留思考（THINK）与回答（RESPONSE/无类型）
+                                                    if ftype in ("SEARCH", "SEARCH_REF"):
+                                                        continue
                                                     content = frag["content"]
                                                     if content:
                                                         yield ChatCompletionChunk(

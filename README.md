@@ -91,6 +91,20 @@ python main.py            # 默认 http://localhost:8000（config.yaml 可改）
 client = OpenAI(base_url="http://localhost:8000/v2", api_key="not-needed")
 ```
 
+#### DeepSeek 深度思考与联网搜索
+
+用模型名后缀控制（`/v1`、`/v2` 均生效）：
+
+| 模型名 | 行为 |
+|---|---|
+| `deepseek-flash` | 常规对话 |
+| `deepseek-reasoner` | 深度思考（模型名含 `reasoner` / `r1` / `think` 即开启） |
+| `deepseek-flash-search` | 联网搜索（任意模型名加 `-search` 后缀即开启） |
+| `deepseek-reasoner-search` | 思考 + 搜索组合 |
+
+搜索状态片段（SEARCH/SEARCH_REF）已过滤不进正文；搜索耗时与官网一致，
+请耐心等待。思考过程（THINK 片段）随回答一起输出。
+
 ```python
 from openai import OpenAI
 
