@@ -343,11 +343,8 @@ def run_server():
 # ---- /v2 透传端点：纯净对话通道 ----
 
 def to_passthrough_request(request: ChatCompletionRequest) -> ChatCompletionRequest:
-    """丢弃 system、忽略 tools，把剩余消息原样发给上游。
-
-    首条 user 消息完全不加前缀；多轮时用「用户：/助手：」最小拼接——
-    因为每次请求都会在上游新建会话，不拼历史就没有上下文。
-    """
+    """回退模式（provider 不支持会话复用时）：丢弃 system、忽略 tools，
+    把剩余消息拼接为一条。首条 user 完全不加前缀；多轮用「用户：/助手：」最小拼接。"""
     parts: List[str] = []
     for m in request.messages:
         if not m.content:
@@ -369,12 +366,107 @@ def to_passthrough_request(request: ChatCompletionRequest) -> ChatCompletionRequ
     })
 
 
+def to_pt_increment_request(request: ChatCompletionRequest) -> ChatCompletionRequest:
+    """会话复用模式：只取最后一条用户消息，历史由上游会话维护。"""
+    last_user = None
+    for m in reversed(request.messages):
+        if m.role == "user" and m.content:
+            last_user = m.content
+            break
+    if not last_user:
+        raise HTTPException(status_code=400, detail="v2 透传通道没有可发送的用户消息")
+    return request.model_copy(update={
+        "messages": [ChatMessage(role="user", content=last_user)],
+        "tools": None,
+        "tool_choice": None,
+    })
+
+
+async def pt_sse(provider, request: ChatCompletionRequest) -> AsyncGenerator[str, None]:
+    """把 provider.pt_stream 包装成 SSE，异常用标准 chunk 信封承载。"""
+    try:
+        async for chunk in provider.pt_stream(request):
+            yield f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
+        yield "data: [DONE]\n\n"
+    except Exception as e:
+        err = ChatCompletionChunk(
+            id=f"chatcmpl-{uuid.uuid4().hex[:8]}",
+            created=int(time.time()),
+            model=request.model,
+            choices=[StreamChoice(
+                index=0,
+                delta=DeltaMessage(content=f"[上游错误] {e}"),
+                finish_reason="stop",
+            )]
+        )
+        yield f"data: {err.model_dump_json(exclude_none=True)}\n\n"
+        yield "data: [DONE]\n\n"
+
+
 @app.post("/v2/chat/completions")
 async def chat_completions_passthrough(
     request: ChatCompletionRequest,
     authorization: Optional[str] = Header(None)
 ):
-    return await chat_completions(to_passthrough_request(request), authorization)
+    provider_name, provider = get_provider_for_model(request.model)
+    await rate_limiter.acquire(provider_name)
+
+    use_pt = hasattr(provider, "pt_stream")
+    if use_pt:
+        req2 = to_pt_increment_request(request)
+    else:
+        req2 = to_passthrough_request(request)
+
+    if request.stream:
+        gen = pt_sse(provider, req2) if use_pt else stream_chat_completion(provider, req2)
+        return StreamingResponse(
+            gen,
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            }
+        )
+
+    if use_pt:
+        text = ""
+        try:
+            async for chunk in provider.pt_stream(req2):
+                for c in chunk.choices:
+                    if c.delta and c.delta.content:
+                        text += c.delta.content
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
+        payload = ChatCompletionResponse(
+            id=f"chatcmpl-{uuid.uuid4().hex[:8]}",
+            created=int(time.time()),
+            model=request.model,
+            choices=[ChatCompletionChoice(
+                index=0,
+                message=ChatMessage(role="assistant", content=text or None),
+                finish_reason="stop"
+            )],
+            usage=Usage(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+        )
+        return JSONResponse(payload.model_dump())
+
+    try:
+        response = await provider.chat_completion(req2)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    return JSONResponse(response.model_dump())
+
+
+@app.post("/v2/session/reset")
+async def reset_pt_sessions():
+    """重置 /v2 透传会话：下一条消息将在上游新建会话（旧会话仍留在网页账号中）。"""
+    n = 0
+    for provider in providers.values():
+        if hasattr(provider, "reset_pt"):
+            provider.reset_pt()
+            n += 1
+    return {"reset": n}
 
 
 @app.get("/v2/models", response_model=ModelList)

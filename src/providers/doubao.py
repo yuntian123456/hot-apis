@@ -6,6 +6,7 @@ import random
 import string
 import hashlib
 import re
+import asyncio
 from typing import Optional, AsyncGenerator, Dict, Any, List
 from dataclasses import dataclass, field
 
@@ -69,7 +70,9 @@ class DoubaoProvider(BaseProvider):
         self._tea_uuid: str = generate_web_id()
         self._fp: str = f"verify_{generate_uuid().replace('-', '_')[:20]}"
         self._sessions: Dict[str, DoubaoChatSession] = {}
-        
+        # /v2 透传会话：固定 key 复用同一豆包会话（单会话非并发安全，串行化）
+        self._pt_lock = asyncio.Lock()
+
     @property
     def name(self) -> str:
         return "doubao"
@@ -325,11 +328,13 @@ class DoubaoProvider(BaseProvider):
         )
     
     async def chat_completion_stream(
-        self, request: ChatCompletionRequest
+        self, request: ChatCompletionRequest,
+        session_key: Optional[str] = None,
     ) -> AsyncGenerator[ChatCompletionChunk, None]:
         client = await self._get_client()
-        
-        session_key = f"{request.model}_{hash(tuple(m.content for m in request.messages))}"
+
+        if session_key is None:
+            session_key = f"{request.model}_{hash(tuple(m.content for m in request.messages))}"
         session = self._get_or_create_session(session_key)
         
         query_params = self._build_query_params()
@@ -512,6 +517,15 @@ class DoubaoProvider(BaseProvider):
             return "Doubao-pro"
         return "doubao"
     
+    async def pt_stream(self, request: ChatCompletionRequest) -> AsyncGenerator[ChatCompletionChunk, None]:
+        """/v2 透传会话流：固定复用同一豆包会话（conversation_id 由 SSE_ACK 提取后续期）。"""
+        async with self._pt_lock:
+            async for chunk in self.chat_completion_stream(request, session_key="passthrough"):
+                yield chunk
+
+    def reset_pt(self):
+        self._sessions.pop("passthrough", None)
+
     async def close(self):
         if self._client:
             await self._client.aclose()

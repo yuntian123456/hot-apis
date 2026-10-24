@@ -21,6 +21,11 @@ class DeepSeekProvider(BaseProvider):
         super().__init__(token=token, base_url=base_url or self.BASE_URL)
         self._client: Optional[httpx.AsyncClient] = None
         self._session_id: Optional[str] = None
+        # /v2 透传会话：复用同一上游会话 + parent_message_id 串联多轮
+        self._pt_lock = asyncio.Lock()
+        self._pt_session_id: Optional[str] = None
+        self._pt_parent_id: Optional[str] = None
+        self._last_assistant_msg_id: Optional[str] = None
         self.headers = {
             "accept": "*/*",
             "content-type": "application/json",
@@ -180,29 +185,33 @@ class DeepSeekProvider(BaseProvider):
         )
     
     async def chat_completion_stream(
-        self, request: ChatCompletionRequest
+        self, request: ChatCompletionRequest,
+        session_id: Optional[str] = None,
+        parent_message_id: Optional[str] = None,
+        track_message_id: bool = False,
     ) -> AsyncGenerator[ChatCompletionChunk, None]:
         client = await self._get_client()
-        
-        session_id = await self._create_session(client)
+
+        if session_id is None:
+            session_id = await self._create_session(client)
         challenge = await self._get_pow_challenge(client)
         pow_response = self._solve_pow(challenge)
-        
+
         headers = {**self.headers, "x-ds-pow-response": pow_response}
-        
+
         model_type = self._get_model_type(request.model)
         prompt = self._build_messages(request.messages)
-        
+
         payload = {
             "chat_session_id": session_id,
-            "parent_message_id": None,
+            "parent_message_id": parent_message_id,
             "prompt": prompt,
             "ref_file_ids": [],
             "thinking_enabled": model_type == "reasoner",
             "search_enabled": False,
             "preempt": False
         }
-        
+
         async with client.stream(
             "POST",
             f"{self.base_url}/api/v0/chat/completion",
@@ -210,17 +219,17 @@ class DeepSeekProvider(BaseProvider):
             json=payload
         ) as response:
             response.raise_for_status()
-            
+
             chunk_id = f"{session_id}@1"
             created = int(time.time())
-            
+
             async for line in response.aiter_lines():
                 if line.startswith("data: "):
                     data_str = line[6:]
                     if data_str.strip() and data_str != "[DONE]":
                         try:
                             data = json.loads(data_str)
-                            
+
                             if "v" in data:
                                 v = data["v"]
                                 if isinstance(v, str):
@@ -239,6 +248,13 @@ class DeepSeekProvider(BaseProvider):
                                         ]
                                     )
                                 elif isinstance(v, dict):
+                                    if track_message_id:
+                                        # 会话链：从 dict 形态帧中提取 assistant 消息 id
+                                        # （字段名按多位置探测，实测日志可确认命中位置）
+                                        resp = v.get("response") if isinstance(v.get("response"), dict) else {}
+                                        mid = v.get("message_id") or resp.get("message_id")
+                                        if mid:
+                                            self._last_assistant_msg_id = str(mid)
                                     if "response" in v:
                                         resp = v["response"]
                                         if "fragments" in resp:
@@ -260,7 +276,7 @@ class DeepSeekProvider(BaseProvider):
                                                         )
                         except json.JSONDecodeError:
                             continue
-        
+
         yield ChatCompletionChunk(
             id=chunk_id,
             model=request.model,
@@ -273,6 +289,33 @@ class DeepSeekProvider(BaseProvider):
                 )
             ]
         )
+
+    async def pt_stream(self, request: ChatCompletionRequest) -> AsyncGenerator[ChatCompletionChunk, None]:
+        """/v2 透传会话流：复用同一上游会话，parent_message_id 串联多轮，
+        每轮只发增量消息（历史由上游会话维护）。单会话非并发安全，串行化。"""
+        async with self._pt_lock:
+            client = await self._get_client()
+            if self._pt_session_id is None:
+                self._pt_session_id = await self._create_session(client)
+                print(f"[deepseek-pt] 透传会话已创建: {self._pt_session_id}")
+            self._last_assistant_msg_id = None
+            async for chunk in self.chat_completion_stream(
+                request,
+                session_id=self._pt_session_id,
+                parent_message_id=self._pt_parent_id,
+                track_message_id=True,
+            ):
+                yield chunk
+            if self._last_assistant_msg_id:
+                if self._last_assistant_msg_id != self._pt_parent_id:
+                    print(f"[deepseek-pt] 已提取 assistant 消息 id，会话链就绪: {self._last_assistant_msg_id}")
+                self._pt_parent_id = self._last_assistant_msg_id
+            else:
+                print("[deepseek-pt] 警告：本次流未提取到 assistant 消息 id，下一轮上下文可能断裂")
+
+    def reset_pt(self):
+        self._pt_session_id = None
+        self._pt_parent_id = None
     
     def _get_model_type(self, model: str) -> str:
         model_lower = model.lower()

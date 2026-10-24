@@ -6,6 +6,7 @@ import time
 import uuid
 import random
 import string
+import asyncio
 from typing import Optional, AsyncGenerator, Dict, Any, List
 from dataclasses import dataclass, field
 
@@ -112,6 +113,8 @@ class KimiProvider(BaseProvider):
         self._traffic_id: str = ""
         self._refresh_token: str = refresh_token or ""
         self._sessions: Dict[str, KimiChatSession] = {}
+        # /v2 透传会话：固定 key 复用同一 Kimi 会话（单会话非并发安全，串行化）
+        self._pt_lock = asyncio.Lock()
         
         self.headers = {
             "accept": "*/*",
@@ -336,15 +339,17 @@ class KimiProvider(BaseProvider):
         )
     
     async def chat_completion_stream(
-        self, request: ChatCompletionRequest
+        self, request: ChatCompletionRequest,
+        session_key: Optional[str] = None,
     ) -> AsyncGenerator[ChatCompletionChunk, None]:
         client = await self._get_client()
-        
+
         await self._ensure_token(client)
         await self._get_user_info(client)
         await self._register_device(client)
-        
-        session_key = f"{request.model}_{hash(tuple(m.content for m in request.messages))}"
+
+        if session_key is None:
+            session_key = f"{request.model}_{hash(tuple(m.content for m in request.messages))}"
         session = self._get_or_create_session(session_key)
         
         headers = {
@@ -442,6 +447,15 @@ class KimiProvider(BaseProvider):
     def get_model_mapping(self, model: str) -> str:
         return "kimi"
     
+    async def pt_stream(self, request: ChatCompletionRequest) -> AsyncGenerator[ChatCompletionChunk, None]:
+        """/v2 透传会话流：固定复用同一 Kimi 会话（chat_id/parent_id 由流提取后续期）。"""
+        async with self._pt_lock:
+            async for chunk in self.chat_completion_stream(request, session_key="passthrough"):
+                yield chunk
+
+    def reset_pt(self):
+        self._sessions.pop("passthrough", None)
+
     async def close(self):
         if self._client:
             await self._client.aclose()

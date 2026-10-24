@@ -88,10 +88,16 @@ python main.py            # http://localhost:8000 by default (see config.yaml)
 | `http://<host>:8000/v1` | Full features: `tools` calling simulation; client system prompts are flattened and sent upstream | agent integrations (Octop, Cline, etc.) |
 | `http://<host>:8000/v2` | **Clean passthrough**: drops system prompts, ignores `tools`, sends messages upstream verbatim | plain chat that feels like the official web UI |
 
-On `/v2` model replies come back verbatim too. For multi-turn conversations the history
-is minimally joined with `用户：/助手：` markers into one message (each request creates a
-new upstream session, so history must be inlined); the first turn is sent exactly as-is.
-The upstream web account stays much cleaner (no system prompts, no tool-call markup).
+On `/v2` model replies come back verbatim too. DeepSeek / Kimi / Doubao support
+**session reuse**: all conversation continues within one upstream web session
+(chained via `parent_message_id`), each turn sending only the new message — the web
+account sees a normal chat. Other platforms fall back to joining turns. Notes:
+
+- The passthrough session lives in memory; container restart resets it, or
+  `POST /v2/session/reset` manually
+- Designed for single-user use; concurrent requests to one platform are serialized
+- The DeepSeek session chain relies on the message ID from upstream responses
+  (check `[deepseek-pt]` lines in the logs)
 
 ```python
 client = OpenAI(base_url="http://localhost:8000/v2", api_key="not-needed")
